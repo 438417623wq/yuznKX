@@ -25,14 +25,22 @@ class PresetsNotifier extends StateNotifier<List<Preset>> {
   static const _boxName = 'presets';
   Box? _box;
 
-  Future<void> _load() async {
-    _box = await Hive.openBox(_boxName);
+  void _load() {
+    _box = Hive.box(_boxName);
     final raw = _box!.values;
-    state = raw.map((e) => Preset.fromJson(Map<String, dynamic>.from(e))).toList();
+    final List<Preset> loaded = [];
+    for (final e in raw) {
+      try {
+        loaded.add(Preset.fromJson(Map<String, dynamic>.from(e)));
+      } catch (e) {
+        print('Error loading preset: $e');
+      }
+    }
+    state = loaded;
   }
 
   Future<void> save(Preset item) async {
-    _box ??= await Hive.openBox(_boxName);
+    _box ??= Hive.box(_boxName);
     
     final index = state.indexWhere((e) => e.id == item.id);
     if (index >= 0) {
@@ -44,12 +52,14 @@ class PresetsNotifier extends StateNotifier<List<Preset>> {
     }
     
     await _box!.put(item.id, item.toJson());
+    await _box!.flush();
   }
 
   Future<void> delete(String id) async {
-    _box ??= await Hive.openBox(_boxName);
+    _box ??= Hive.box(_boxName);
     state = state.where((e) => e.id != id).toList();
     await _box!.delete(id);
+    await _box!.flush();
   }
 }
 
@@ -58,14 +68,14 @@ class ActivePresetIdNotifier extends StateNotifier<String?> {
     _load();
   }
 
-  Future<void> _load() async {
-    final box = await Hive.openBox('settings');
+  void _load() {
+    final box = Hive.box('settings');
     state = box.get('active_preset_id');
   }
 
   Future<void> setActive(String? id) async {
     state = id;
-    final box = await Hive.openBox('settings');
+    final box = Hive.box('settings');
     if (id == null) {
       await box.delete('active_preset_id');
     } else {

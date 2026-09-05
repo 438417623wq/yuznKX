@@ -12,9 +12,8 @@ class TtsNotifier extends StateNotifier<bool> {
     // await flutterTts.setLanguage("zh-CN"); // Default to Chinese
     // await flutterTts.setLanguage("en-US"); 
     
-    // Check available languages?
-    // For now, let's just init handlers.
-    
+    await flutterTts.awaitSpeakCompletion(true);
+
     flutterTts.setStartHandler(() {
       state = true;
     });

@@ -17,14 +17,14 @@ class ActiveSessionIdNotifier extends StateNotifier<String?> {
     _load();
   }
 
-  Future<void> _load() async {
-    final box = await Hive.openBox('settings');
-    state = box.get('active_session_id');
+  void _load() {
+    final box = Hive.box('settings');
+    state = box.get('active_session_id') as String?;
   }
 
   Future<void> setActive(String? id) async {
     state = id;
-    final box = await Hive.openBox('settings');
+    final box = Hive.box('settings');
     if (id == null) {
       await box.delete('active_session_id');
     } else {
@@ -40,46 +40,62 @@ class SessionNotifier extends StateNotifier<List<Session>> {
     _init();
   }
 
-  Future<void> _init() async {
-    _box = await Hive.openBox('sessions');
+  void _init() {
+    _box = Hive.box('sessions');
     _loadSessions();
   }
 
   void _loadSessions() {
     final data = _box.values.toList();
-    state = data.map((e) => Session.fromJson(Map<String, dynamic>.from(e))).toList()
-      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt)); // Sort by recent
+    final List<Session> loadedSessions = [];
+    for (final e in data) {
+      try {
+        loadedSessions.add(Session.fromJson(Map<String, dynamic>.from(e)));
+      } catch (e) {
+        print('Error loading session: $e');
+      }
+    }
+    loadedSessions.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    state = loadedSessions;
   }
 
-  Future<void> createSession(String name, {String? characterId}) async {
+  Future<Session> createSession(
+    String name, {
+    String? characterId,
+    List<String>? groupCharacterIds,
+    List<String>? worldInfoIds,
+  }) async {
+    final now = DateTime.now();
     final newSession = Session(
       id: const Uuid().v4(),
       name: name,
       characterId: characterId ?? '',
-      createdAt: DateTime.now(),
-      updatedAt: DateTime.now(),
+      groupCharacterIds: groupCharacterIds ?? [],
+      worldInfoIds: worldInfoIds ?? [],
+      createdAt: now,
+      updatedAt: now,
       messages: [],
     );
     await _box.put(newSession.id, newSession.toJson());
-    state = [newSession, ...state];
+    _upsertInState(newSession);
+    return newSession;
   }
 
   Future<void> updateSession(Session session) async {
-    await _box.put(session.id, session.toJson());
-    
-    final index = state.indexWhere((s) => s.id == session.id);
-    if (index != -1) {
-      final newState = [...state];
-      newState[index] = session;
-      newState.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-      state = newState;
-    } else {
-      // Should not happen for update, but if so, add it
-      state = [session, ...state];
-    }
+    final touchedSession = session.copyWith(updatedAt: DateTime.now());
+    await _box.put(touchedSession.id, touchedSession.toJson());
+    _upsertInState(touchedSession);
   }
 
-  Future<void> updateSessionMessages(String sessionId, List<ChatMessage> messages) async {
+  Future<void> updateSessionMessages(
+    String sessionId,
+    List<ChatMessage> messages, {
+    String? fallbackCharacterId,
+    String? fallbackName,
+    List<String>? fallbackGroupCharacterIds,
+    List<String>? fallbackWorldInfoIds,
+    bool createIfMissing = true,
+  }) async {
     final index = state.indexWhere((s) => s.id == sessionId);
     if (index != -1) {
       final updatedSession = state[index].copyWith(
@@ -88,17 +104,46 @@ class SessionNotifier extends StateNotifier<List<Session>> {
       );
       
       await _box.put(sessionId, updatedSession.toJson());
-      
-      // Update state
-      final newState = [...state];
-      newState[index] = updatedSession;
-      newState.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-      state = newState;
+      await _box.flush(); // Ensure data is persisted
+      _upsertInState(updatedSession);
+      return;
     }
+
+    if (!createIfMissing) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final newSession = Session(
+      id: sessionId,
+      name: fallbackName ?? 'Recovered Chat',
+      characterId: fallbackCharacterId ?? '',
+      groupCharacterIds: fallbackGroupCharacterIds ?? const [],
+      worldInfoIds: fallbackWorldInfoIds ?? const [],
+      createdAt: now,
+      updatedAt: now,
+      messages: messages,
+    );
+
+    await _box.put(sessionId, newSession.toJson());
+    await _box.flush();
+    _upsertInState(newSession);
   }
 
   Future<void> deleteSession(String sessionId) async {
     await _box.delete(sessionId);
     state = state.where((s) => s.id != sessionId).toList();
+  }
+
+  void _upsertInState(Session session) {
+    final index = state.indexWhere((s) => s.id == session.id);
+    final newState = [...state];
+    if (index == -1) {
+      newState.add(session);
+    } else {
+      newState[index] = session;
+    }
+    newState.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    state = newState;
   }
 }

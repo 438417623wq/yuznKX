@@ -6,17 +6,43 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:png_chunks_extract/png_chunks_extract.dart' as png_chunks;
+import 'package:path_provider/path_provider.dart';
 import '../domain/models/character.dart';
 import '../../regex/data/regex_provider.dart';
 import '../../regex/domain/models/regex_script.dart';
 import '../../world_info/data/world_info_provider.dart';
 import '../../world_info/domain/models/world_info.dart';
 
-final characterListProvider = StateNotifierProvider<CharacterListNotifier, List<Character>>((ref) {
+dynamic _deepCopyDynamic(dynamic value) {
+  if (value is Map) {
+    return value.map((key, val) => MapEntry(
+          key.toString(),
+          _deepCopyDynamic(val),
+        ));
+  }
+  if (value is List) {
+    return value.map(_deepCopyDynamic).toList();
+  }
+  return value;
+}
+
+Map<String, dynamic> _safeMap(dynamic value) {
+  if (value is Map) {
+    return value.map((key, val) => MapEntry(
+          key.toString(),
+          _deepCopyDynamic(val),
+        ));
+  }
+  return <String, dynamic>{};
+}
+
+final characterListProvider =
+    StateNotifierProvider<CharacterListNotifier, List<Character>>((ref) {
   return CharacterListNotifier(ref);
 });
 
-final activeCharacterIdProvider = StateNotifierProvider<ActiveCharacterIdNotifier, String?>((ref) {
+final activeCharacterIdProvider =
+    StateNotifierProvider<ActiveCharacterIdNotifier, String?>((ref) {
   return ActiveCharacterIdNotifier();
 });
 
@@ -25,14 +51,14 @@ class ActiveCharacterIdNotifier extends StateNotifier<String?> {
     _load();
   }
 
-  Future<void> _load() async {
-    final box = await Hive.openBox('settings');
+  void _load() {
+    final box = Hive.box('settings');
     state = box.get('active_character_id');
   }
 
   Future<void> setActive(String? id) async {
     state = id;
-    final box = await Hive.openBox('settings');
+    final box = Hive.box('settings');
     if (id == null) {
       await box.delete('active_character_id');
     } else {
@@ -60,18 +86,22 @@ class CharacterListNotifier extends StateNotifier<List<Character>> {
     _init();
   }
 
-  Future<void> _init() async {
-    if (!Hive.isBoxOpen('characters')) {
-      _box = await Hive.openBox('characters');
-    } else {
-      _box = Hive.box('characters');
-    }
+  void _init() {
+    _box = Hive.box('characters');
     _load();
   }
 
   void _load() {
     final data = _box.values.toList();
-    state = data.map((e) => Character.fromJson(Map<String, dynamic>.from(e))).toList();
+    final List<Character> loadedCharacters = [];
+    for (final e in data) {
+      try {
+        loadedCharacters.add(Character.fromJson(Map<String, dynamic>.from(e)));
+      } catch (e) {
+        print('Error loading character: $e');
+      }
+    }
+    state = loadedCharacters;
   }
 
   Future<void> save(Character character) async {
@@ -84,34 +114,26 @@ class CharacterListNotifier extends StateNotifier<List<Character>> {
   }
 
   Future<void> delete(String id) async {
-    // Find the character to be deleted to access its linked assets
     final character = state.firstWhere(
       (c) => c.id == id,
       orElse: () => Character(
-        id: '', 
-        name: '', 
-        description: '', 
-        avatarPath: '', 
-        systemInstruction: '', 
-        firstMessage: ''
-      ),
+          id: '',
+          name: '',
+          description: '',
+          avatarPath: '',
+          systemInstruction: '',
+          firstMessage: ''),
     );
 
-    if (character.id.isNotEmpty) {
-       // Delete linked World Info
-       for (final wiId in character.worldInfoIds) {
-          await ref.read(worldInfoProvider.notifier).delete(wiId);
-       }
-       
-       // Delete linked Regex Scripts
-       for (final rsId in character.regexScriptIds) {
-          await ref.read(regexScriptsProvider.notifier).delete(rsId);
-       }
+    if (character.id.isNotEmpty && character.characterBookId != null) {
+      await ref
+          .read(worldInfoProvider.notifier)
+          .delete(character.characterBookId!);
     }
 
     await _box.delete(id);
     state = state.where((c) => c.id != id).toList();
-    
+
     // Check if the deleted character was active
     final activeId = ref.read(activeCharacterIdProvider);
     if (activeId == id) {
@@ -125,92 +147,258 @@ class CharacterListNotifier extends StateNotifier<List<Character>> {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['json', 'png'],
+      withData: true,
     );
 
-    if (result != null && result.files.single.path != null) {
-      final file = File(result.files.single.path!);
-      final extension = result.files.single.extension?.toLowerCase();
+    if (result == null) {
+      return;
+    }
 
-      try {
-        Character? character;
-        if (extension == 'json') {
-          character = await _importJson(file);
-        } else if (extension == 'png') {
-          character = await _importPng(file);
-        }
+    final pickedFile = result.files.single;
+    final extension = pickedFile.extension?.toLowerCase();
 
-        if (character != null) {
-          await save(character);
-        }
-      } catch (e) {
-        print('Import Error: $e');
-        // Ideally show error via a provider or callback
+    try {
+      Character? character;
+      if (extension == 'json') {
+        character = await _importJson(pickedFile);
+      } else if (extension == 'png') {
+        character = await _importPng(pickedFile);
       }
+
+      if (character != null) {
+        await save(character);
+      }
+    } catch (e) {
+      print('Import Error: $e');
+      // Ideally show error via a provider or callback
     }
   }
 
-  Future<Character> _importJson(File file) async {
-    final content = await file.readAsString();
-    final json = jsonDecode(content);
-    return await _parseV2Spec(json, file.path); // Assume JSON is V2 or V1 compatible
+  Future<Character> _importJson(PlatformFile file) async {
+    final content = await _readFileText(file);
+    final decoded = jsonDecode(content);
+    return await _parseV2Spec(
+      _safeMap(decoded),
+      file.path ?? file.name,
+      avatarPath: '',
+    );
   }
 
-  Future<Character?> _importPng(File file) async {
-    final bytes = await file.readAsBytes();
-    
-    // Extract tEXt chunks using png_chunks_encode (or manual parsing)
-    // SillyTavern embeds JSON in a 'chara' tEXt chunk (CCV3) or base64 string in 'chara'
-    // V2 spec uses 'ccv2'? Actually usually 'chara' key with base64 encoded content.
-    
-    // Let's implement a simple chunk reader
+  Future<Character?> _importPng(PlatformFile file) async {
+    final bytes = await _readFileBytes(file);
     final chunks = png_chunks.extractChunks(bytes);
-    String? charaContent;
+    final textChunks = <String, String>{};
 
     for (final chunk in chunks) {
-      if (chunk['name'] == 'tEXt') {
+      final name = chunk['name']?.toString();
+      if (name == 'tEXt') {
         final data = chunk['data'] as List<int>;
-        // tEXt format: keyword + null + text
-        int nullIndex = data.indexOf(0);
-        if (nullIndex != -1) {
-          final keyword = String.fromCharCodes(data.sublist(0, nullIndex));
-          if (keyword == 'chara') {
-             // Found character data
-             final textData = String.fromCharCodes(data.sublist(nullIndex + 1));
-             // It's usually base64 encoded JSON
-             try {
-               final decoded = utf8.decode(base64Decode(textData));
-               charaContent = decoded;
-             } catch (e) {
-               // Maybe plain text JSON? (Rare)
-               charaContent = textData;
-             }
-             break;
-          }
+        final entry = _parseTextChunk(data);
+        if (entry != null) {
+          textChunks[entry.$1] = entry.$2;
+        }
+      } else if (name == 'iTXt') {
+        final data = chunk['data'] as List<int>;
+        final entry = _parseInternationalTextChunk(data);
+        if (entry != null) {
+          textChunks[entry.$1] = entry.$2;
         }
       }
     }
 
-    if (charaContent != null) {
-      final json = jsonDecode(charaContent);
-      return await _parseV2Spec(json, file.path); // Use PNG path as avatar
+    final candidates = <String>[
+      if (textChunks['chara'] != null) textChunks['chara']!,
+      if (textChunks['ccv3'] != null) textChunks['ccv3']!,
+      ...textChunks.entries
+          .where((entry) => entry.value.trim().length > 100)
+          .map((entry) => entry.value),
+    ];
+
+    for (final candidate in candidates) {
+      final json = _decodeCharacterPayload(candidate);
+      if (json == null) {
+        continue;
+      }
+
+      final avatarPath = await _persistImportedAvatar(bytes);
+      return _parseV2Spec(
+        json,
+        file.path ?? file.name,
+        avatarPath: avatarPath,
+      );
     }
-    
+
     return null;
   }
 
-  Future<Character> _parseV2Spec(Map<String, dynamic> json, String sourcePath) async {
+  Future<String> _readFileText(PlatformFile file) async {
+    if (file.bytes != null) {
+      try {
+        return utf8.decode(file.bytes!);
+      } on FormatException {
+        return utf8.decode(file.bytes!, allowMalformed: true);
+      }
+    }
+
+    if (file.path != null) {
+      return File(file.path!).readAsString();
+    }
+
+    throw const FormatException('Unable to read imported file text.');
+  }
+
+  Future<Uint8List> _readFileBytes(PlatformFile file) async {
+    if (file.bytes != null) {
+      return Uint8List.fromList(file.bytes!);
+    }
+
+    if (file.path != null) {
+      return File(file.path!).readAsBytes();
+    }
+
+    throw const FormatException('Unable to read imported file bytes.');
+  }
+
+  (String, String)? _parseTextChunk(List<int> data) {
+    final nullIndex = data.indexOf(0);
+    if (nullIndex <= 0) {
+      return null;
+    }
+
+    final keyword =
+        utf8.decode(data.sublist(0, nullIndex), allowMalformed: true);
+    final value =
+        utf8.decode(data.sublist(nullIndex + 1), allowMalformed: true);
+    return (keyword, value);
+  }
+
+  (String, String)? _parseInternationalTextChunk(List<int> data) {
+    var pointer = 0;
+    while (pointer < data.length && data[pointer] != 0) {
+      pointer++;
+    }
+    if (pointer <= 0 || pointer >= data.length) {
+      return null;
+    }
+
+    final keyword = utf8.decode(data.sublist(0, pointer), allowMalformed: true);
+    pointer++;
+
+    if (pointer + 2 > data.length) {
+      return null;
+    }
+
+    final compressionFlag = data[pointer];
+    pointer += 2; // compression method
+
+    while (pointer < data.length && data[pointer] != 0) {
+      pointer++;
+    }
+    pointer++;
+
+    while (pointer < data.length && data[pointer] != 0) {
+      pointer++;
+    }
+    pointer++;
+
+    if (pointer > data.length || compressionFlag != 0) {
+      return null;
+    }
+
+    final value = utf8.decode(data.sublist(pointer), allowMalformed: true);
+    return (keyword, value);
+  }
+
+  Map<String, dynamic>? _decodeCharacterPayload(String rawPayload) {
+    final trimmed = rawPayload.trim();
+    if (trimmed.isEmpty) {
+      return null;
+    }
+
+    final candidates = <String>{trimmed};
+    final commaIndex = trimmed.indexOf(',');
+    if (trimmed.startsWith('data:') && commaIndex != -1) {
+      candidates.add(trimmed.substring(commaIndex + 1).trim());
+    }
+
+    for (final candidate in candidates.toList()) {
+      final decoded = _tryDecodeBase64(candidate);
+      if (decoded != null && decoded.trim().isNotEmpty) {
+        candidates.add(decoded.trim());
+      }
+    }
+
+    for (final candidate in candidates) {
+      try {
+        final parsed = jsonDecode(candidate);
+        if (parsed is Map) {
+          return _safeMap(parsed);
+        }
+      } catch (_) {
+        // Try next candidate.
+      }
+    }
+
+    return null;
+  }
+
+  String? _tryDecodeBase64(String raw) {
+    final normalized = raw.replaceAll(RegExp(r'\s+'), '');
+    if (normalized.isEmpty || normalized.startsWith('{')) {
+      return null;
+    }
+
+    final padding = normalized.length % 4;
+    final padded = padding == 0
+        ? normalized
+        : normalized.padRight(normalized.length + (4 - padding), '=');
+
+    try {
+      return utf8.decode(base64Decode(padded), allowMalformed: true);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String> _persistImportedAvatar(Uint8List bytes) async {
+    final directory = await getApplicationDocumentsDirectory();
+    final avatarDir = Directory(
+      '${directory.path}${Platform.pathSeparator}character_avatars',
+    );
+    if (!avatarDir.existsSync()) {
+      await avatarDir.create(recursive: true);
+    }
+
+    final file = File(
+      '${avatarDir.path}${Platform.pathSeparator}${const Uuid().v4()}.png',
+    );
+    await file.writeAsBytes(bytes, flush: true);
+    return file.path;
+  }
+
+  Future<Character> _parseV2Spec(
+    Map<String, dynamic> json,
+    String sourcePath, {
+    required String avatarPath,
+  }) async {
     // Handle V1/V2 differences
     // V2 Spec: https://github.com/SillyTavern/SillyTavern/blob/release/docs/character_card_v2.md
-    
+
     // "spec": "chara_card_v2", "data": { ... }
     // Or legacy format directly in root.
-    
+
+    final rawRoot = _safeMap(json);
+    final spec = json['spec']?.toString() ?? 'chara_card_v2';
+    final specVersion = json['spec_version']?.toString() ?? '2.0';
+
     Map<String, dynamic> data = json;
-    if (json.containsKey('spec') && (json['spec'] == 'chara_card_v2' || json['spec'] == 'chara_card_v3')) {
-      data = json['data'];
+    if (json.containsKey('spec') &&
+        (json['spec'] == 'chara_card_v2' || json['spec'] == 'chara_card_v3')) {
+      data = _safeMap(json['data']);
     }
 
     // Extract World Info
+    String? characterBookId;
     List<String> worldInfoIds = [];
     dynamic bookData;
     if (data.containsKey('character_book')) {
@@ -219,11 +407,13 @@ class CharacterListNotifier extends StateNotifier<List<Character>> {
       bookData = json['character_book'];
     }
 
+    final rawCharacterBook = _safeMap(bookData);
     if (bookData != null) {
       try {
-        final wi = WorldInfo.fromJson(Map<String, dynamic>.from(bookData));
+        final wi =
+            WorldInfo.fromJson(Map<String, dynamic>.from(rawCharacterBook));
         await ref.read(worldInfoProvider.notifier).save(wi);
-        worldInfoIds.add(wi.id);
+        characterBookId = wi.id;
       } catch (e) {
         print('Error importing World Info: $e');
       }
@@ -238,18 +428,39 @@ class CharacterListNotifier extends StateNotifier<List<Character>> {
       extensions = json['extensions'];
     }
 
-    if (extensions != null && extensions is Map && extensions.containsKey('regex_scripts')) {
-      final scripts = extensions['regex_scripts'];
+    final rawExtensions = _safeMap(extensions);
+    if (rawExtensions.containsKey('regex_scripts')) {
+      final scripts = rawExtensions['regex_scripts'];
       if (scripts is List) {
         for (var scriptData in scripts) {
-           try {
-             final script = RegexScript.fromJson(Map<String, dynamic>.from(scriptData));
-             await ref.read(regexScriptsProvider.notifier).save(script);
-             regexScriptIds.add(script.id);
-           } catch (e) {
-             print('Error importing Regex Script: $e');
-           }
+          try {
+            final script =
+                RegexScript.fromJson(Map<String, dynamic>.from(scriptData));
+            await ref.read(regexScriptsProvider.notifier).save(script);
+            regexScriptIds.add(script.id);
+          } catch (e) {
+            print('Error importing Regex Script: $e');
+          }
         }
+      }
+    }
+
+    String parsedAuthorsNote =
+        data['post_history_instructions']?.toString() ?? '';
+    int parsedAuthorsNoteDepth = 4;
+    final depthPrompt = _safeMap(rawExtensions['depth_prompt']);
+    if (depthPrompt.isNotEmpty) {
+      final extPrompt = depthPrompt['prompt']?.toString() ?? '';
+      if (parsedAuthorsNote.isEmpty && extPrompt.isNotEmpty) {
+        parsedAuthorsNote = extPrompt;
+      }
+      final depthRaw = depthPrompt['depth'];
+      if (depthRaw is int) {
+        parsedAuthorsNoteDepth = depthRaw;
+      } else if (depthRaw is num) {
+        parsedAuthorsNoteDepth = depthRaw.toInt();
+      } else if (depthRaw is String) {
+        parsedAuthorsNoteDepth = int.tryParse(depthRaw) ?? 4;
       }
     }
 
@@ -257,17 +468,33 @@ class CharacterListNotifier extends StateNotifier<List<Character>> {
       id: const Uuid().v4(),
       name: data['name'] ?? 'Imported Character',
       description: data['description'] ?? '',
-      avatarPath: sourcePath, // Use the file path as avatar
+      personality: data['personality']?.toString() ?? '',
+      systemPrompt: data['system_prompt']?.toString() ?? '',
+      creatorNotes: data['creator_notes']?.toString() ??
+          data['creatorNotes']?.toString() ??
+          '',
+      avatarPath: avatarPath,
       tags: List<String>.from(data['tags'] ?? []),
       creator: data['creator'] ?? '',
       version: data['character_version'] ?? '1.0',
-      systemInstruction: data['system_prompt'] ?? data['personality'] ?? '', // Fallback
+      systemInstruction:
+          (data['system_prompt']?.toString().trim().isNotEmpty ?? false)
+              ? data['system_prompt'].toString()
+              : data['personality']?.toString() ?? '',
       scenario: data['scenario'] ?? '',
-      authorsNote: data['post_history_instructions'] ?? '', // Author's Note mapping
+      authorsNote: parsedAuthorsNote,
+      authorsNoteDepth: parsedAuthorsNoteDepth,
       firstMessage: data['first_mes'] ?? '',
       alternateGreetings: List<String>.from(data['alternate_greetings'] ?? []),
+      exampleDialogue: data['mes_example']?.toString() ?? '',
+      characterBookId: characterBookId,
       worldInfoIds: worldInfoIds,
       regexScriptIds: regexScriptIds,
+      cardSpec: spec,
+      cardSpecVersion: specVersion,
+      rawCardData: rawRoot,
+      rawExtensions: rawExtensions,
+      rawCharacterBook: rawCharacterBook.isEmpty ? null : rawCharacterBook,
     );
   }
 }

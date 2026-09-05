@@ -4,43 +4,150 @@ import '../domain/models/world_info.dart';
 
 final worldInfoProvider = StateNotifierProvider<WorldInfoNotifier, List<WorldInfo>>((ref) => WorldInfoNotifier());
 final activeWorldInfoIdsProvider = StateNotifierProvider<ActiveWorldInfoIdsNotifier, List<String>>((ref) => ActiveWorldInfoIdsNotifier());
+final worldInfoSettingsProvider =
+    StateNotifierProvider<WorldInfoSettingsNotifier, WorldInfoScanSettings>(
+        (ref) => WorldInfoSettingsNotifier());
+
+enum WorldInfoCharacterStrategy {
+  evenly,
+  characterFirst,
+  globalFirst,
+}
+
+class WorldInfoScanSettings {
+  final int scanDepth;
+  final int minActivations;
+  final int minActivationsDepthMax;
+  final int budgetPercentage;
+  final bool recursive;
+  final WorldInfoCharacterStrategy characterStrategy;
+  final int budgetCap;
+  final bool includeNames;
+
+  const WorldInfoScanSettings({
+    this.scanDepth = 2,
+    this.minActivations = 0,
+    this.minActivationsDepthMax = 0,
+    this.budgetPercentage = 25,
+    this.recursive = false,
+    this.characterStrategy = WorldInfoCharacterStrategy.characterFirst,
+    this.budgetCap = 0,
+    this.includeNames = true,
+  });
+
+  WorldInfoScanSettings copyWith({
+    int? scanDepth,
+    int? minActivations,
+    int? minActivationsDepthMax,
+    int? budgetPercentage,
+    bool? recursive,
+    WorldInfoCharacterStrategy? characterStrategy,
+    int? budgetCap,
+    bool? includeNames,
+  }) {
+    return WorldInfoScanSettings(
+      scanDepth: scanDepth ?? this.scanDepth,
+      minActivations: minActivations ?? this.minActivations,
+      minActivationsDepthMax:
+          minActivationsDepthMax ?? this.minActivationsDepthMax,
+      budgetPercentage: budgetPercentage ?? this.budgetPercentage,
+      recursive: recursive ?? this.recursive,
+      characterStrategy: characterStrategy ?? this.characterStrategy,
+      budgetCap: budgetCap ?? this.budgetCap,
+      includeNames: includeNames ?? this.includeNames,
+    );
+  }
+
+  factory WorldInfoScanSettings.fromHive(Box box) {
+    int readInt(String key, int fallback) {
+      final raw = box.get(key);
+      if (raw is int) {
+        return raw;
+      }
+      if (raw is num) {
+        return raw.toInt();
+      }
+      if (raw is String) {
+        return int.tryParse(raw.trim()) ?? fallback;
+      }
+      return fallback;
+    }
+
+    bool readBool(String key, bool fallback) {
+      final raw = box.get(key);
+      if (raw is bool) {
+        return raw;
+      }
+      if (raw is num) {
+        return raw != 0;
+      }
+      if (raw is String) {
+        final normalized = raw.trim().toLowerCase();
+        if (normalized == 'true' || normalized == '1') {
+          return true;
+        }
+        if (normalized == 'false' || normalized == '0') {
+          return false;
+        }
+      }
+      return fallback;
+    }
+
+    WorldInfoCharacterStrategy readStrategy() {
+      final raw = readInt(
+        'world_info_character_strategy',
+        WorldInfoCharacterStrategy.characterFirst.index,
+      );
+      if (raw == WorldInfoCharacterStrategy.evenly.index) {
+        return WorldInfoCharacterStrategy.evenly;
+      }
+      if (raw == WorldInfoCharacterStrategy.globalFirst.index) {
+        return WorldInfoCharacterStrategy.globalFirst;
+      }
+      return WorldInfoCharacterStrategy.characterFirst;
+    }
+
+    return WorldInfoScanSettings(
+      scanDepth: readInt('world_info_depth', 2).clamp(0, 1000),
+      minActivations:
+          readInt('world_info_min_activations', 0).clamp(0, 1000),
+      minActivationsDepthMax:
+          readInt('world_info_min_activations_depth_max', 0)
+              .clamp(0, 1000),
+      budgetPercentage: readInt('world_info_budget', 25).clamp(0, 100),
+      recursive: readBool('world_info_recursive', false),
+      characterStrategy: readStrategy(),
+      budgetCap: readInt('world_info_budget_cap', 0).clamp(0, 1 << 20),
+      includeNames: readBool('world_info_include_names', true),
+    );
+  }
+}
 
 class WorldInfoNotifier extends StateNotifier<List<WorldInfo>> {
   WorldInfoNotifier() : super([]) { _load(); }
   static const _boxName = 'world_info';
   Box? _box;
 
-  Future<void> _load() async {
-    _box = await Hive.openBox(_boxName);
-    // Don't overwrite if state was already populated by save() unless box has more
-    if (state.isEmpty && _box!.isNotEmpty) {
-       state = _box!.values.map((e) => WorldInfo.fromJson(Map<String, dynamic>.from(e))).toList();
-    } else if (_box!.isNotEmpty) {
-      // Merge strategy?
-      // Simple strategy: trust the box.
-      // But if save() ran before _load(), box should have the new item.
-      // So trusting the box is correct.
-      state = _box!.values.map((e) => WorldInfo.fromJson(Map<String, dynamic>.from(e))).toList();
+  void _load() {
+    _box = Hive.box(_boxName);
+    if (_box!.isNotEmpty) {
+      final List<WorldInfo> loaded = [];
+      for (final e in _box!.values) {
+        try {
+          loaded.add(WorldInfo.fromJson(Map<String, dynamic>.from(e)));
+        } catch (e) {
+          print('Error loading world info: $e');
+        }
+      }
+      state = loaded;
     }
   }
 
   Future<void> save(WorldInfo item) async {
-    _box ??= await Hive.openBox(_boxName);
+    _box ??= Hive.box(_boxName);
     
-    // Ensure we are up to date with the box before saving, 
-    // BUT we must not lose the current state if it's ahead of the box (unlikely here).
-    // The main issue was _load overwriting state.
-    // Since save writes to box, if _load runs after save, it reads from box, which includes the new item.
-    // If _load runs before save, it sets state. Then save updates state.
-    // The only danger is if _load reads (snapshot), then save writes, then _load sets state.
-    
-    // To avoid this, we can just rely on state manipulation being atomic relative to the box write?
-    // No.
-    
-    // Let's just write to box first.
     await _box!.put(item.id, item.toJson());
     
-    // Then update state from memory (optimistic update)
     final index = state.indexWhere((e) => e.id == item.id);
     if (index >= 0) {
       final newState = [...state];
@@ -52,7 +159,7 @@ class WorldInfoNotifier extends StateNotifier<List<WorldInfo>> {
   }
 
   Future<void> delete(String id) async {
-    _box ??= await Hive.openBox(_boxName);
+    _box ??= Hive.box(_boxName);
     state = state.where((e) => e.id != id).toList();
     await _box!.delete(id);
   }
@@ -61,8 +168,8 @@ class WorldInfoNotifier extends StateNotifier<List<WorldInfo>> {
 class ActiveWorldInfoIdsNotifier extends StateNotifier<List<String>> {
   ActiveWorldInfoIdsNotifier() : super([]) { _load(); }
   
-  Future<void> _load() async {
-    final box = await Hive.openBox('settings');
+  void _load() {
+    final box = Hive.box('settings');
     final raw = box.get('active_world_info_ids');
     if (raw != null) {
       if (raw is List) {
@@ -80,7 +187,37 @@ class ActiveWorldInfoIdsNotifier extends StateNotifier<List<String>> {
     } else {
       state = [...state, id];
     }
-    final box = await Hive.openBox('settings');
+    final box = Hive.box('settings');
     await box.put('active_world_info_ids', state);
+  }
+}
+
+class WorldInfoSettingsNotifier extends StateNotifier<WorldInfoScanSettings> {
+  WorldInfoSettingsNotifier() : super(const WorldInfoScanSettings()) {
+    _load();
+  }
+
+  void _load() {
+    final box = Hive.box('settings');
+    state = WorldInfoScanSettings.fromHive(box);
+  }
+
+  Future<void> update(WorldInfoScanSettings settings) async {
+    state = settings;
+    final box = Hive.box('settings');
+    await box.put('world_info_depth', settings.scanDepth);
+    await box.put('world_info_min_activations', settings.minActivations);
+    await box.put(
+      'world_info_min_activations_depth_max',
+      settings.minActivationsDepthMax,
+    );
+    await box.put('world_info_budget', settings.budgetPercentage);
+    await box.put('world_info_recursive', settings.recursive);
+    await box.put(
+      'world_info_character_strategy',
+      settings.characterStrategy.index,
+    );
+    await box.put('world_info_budget_cap', settings.budgetCap);
+    await box.put('world_info_include_names', settings.includeNames);
   }
 }

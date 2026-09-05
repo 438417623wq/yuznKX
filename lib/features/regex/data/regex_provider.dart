@@ -10,13 +10,21 @@ class RegexScriptsNotifier extends StateNotifier<List<RegexScript>> {
   static const _boxName = 'regex_scripts';
   Box? _box;
 
-  Future<void> _load() async {
-    _box = await Hive.openBox(_boxName);
-    state = _box!.values.map((e) => RegexScript.fromJson(Map<String, dynamic>.from(e))).toList();
+  void _load() {
+    _box = Hive.box(_boxName);
+    final List<RegexScript> loaded = [];
+    for (final e in _box!.values) {
+      try {
+        loaded.add(RegexScript.fromJson(Map<String, dynamic>.from(e)));
+      } catch (e) {
+        print('Error loading regex script: $e');
+      }
+    }
+    state = loaded;
   }
 
   Future<void> save(RegexScript item) async {
-    _box ??= await Hive.openBox(_boxName);
+    _box ??= Hive.box(_boxName);
     final index = state.indexWhere((e) => e.id == item.id);
     if (index >= 0) {
       final newState = [...state];
@@ -29,7 +37,7 @@ class RegexScriptsNotifier extends StateNotifier<List<RegexScript>> {
   }
 
   Future<void> delete(String id) async {
-    _box ??= await Hive.openBox(_boxName);
+    _box ??= Hive.box(_boxName);
     state = state.where((e) => e.id != id).toList();
     await _box!.delete(id);
   }
@@ -38,8 +46,8 @@ class RegexScriptsNotifier extends StateNotifier<List<RegexScript>> {
 class ActiveRegexIdsNotifier extends StateNotifier<List<String>> {
   ActiveRegexIdsNotifier() : super([]) { _load(); }
   
-  Future<void> _load() async {
-    final box = await Hive.openBox('settings');
+  void _load() {
+    final box = Hive.box('settings');
     final List<dynamic>? raw = box.get('active_regex_ids');
     if (raw != null) {
       state = raw.cast<String>();
@@ -52,7 +60,7 @@ class ActiveRegexIdsNotifier extends StateNotifier<List<String>> {
     } else {
       state = [...state, id];
     }
-    final box = await Hive.openBox('settings');
+    final box = Hive.box('settings');
     await box.put('active_regex_ids', state);
   }
 }

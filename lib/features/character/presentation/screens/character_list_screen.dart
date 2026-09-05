@@ -6,7 +6,8 @@ import '../../domain/models/character.dart';
 import 'character_edit_screen.dart';
 
 class CharacterListScreen extends ConsumerStatefulWidget {
-  const CharacterListScreen({super.key});
+  final bool showGroupsOnly;
+  const CharacterListScreen({super.key, this.showGroupsOnly = false});
 
   @override
   ConsumerState<CharacterListScreen> createState() => _CharacterListScreenState();
@@ -20,14 +21,49 @@ class _CharacterListScreenState extends ConsumerState<CharacterListScreen> {
   Widget build(BuildContext context) {
     final characters = ref.watch(characterListProvider);
     final query = _searchController.text.toLowerCase();
-    final filteredChars = characters.where((c) => c.name.toLowerCase().contains(query)).toList();
+    
+    final filteredChars = characters.where((c) {
+      final matchesQuery = c.name.toLowerCase().contains(query);
+      final matchesType = widget.showGroupsOnly ? c.isGroup : !c.isGroup;
+      // Note: If we want to show BOTH in the main list, we can remove the !c.isGroup check 
+      // when showGroupsOnly is false, but usually "Characters" means just characters.
+      // However, SillyTavern usually mixes them.
+      // Let's assume:
+      // - If showGroupsOnly is true: Show ONLY groups.
+      // - If showGroupsOnly is false: Show characters AND groups (or maybe just characters?).
+      // The user complaint "New group chats not showing in character list" suggests they EXPECT them there.
+      // So if showGroupsOnly is false, we should probably show EVERYTHING or at least not filter out groups.
+      
+      // Re-reading user intent: "New group chats not showing in character list".
+      // This implies they ARE hidden currently.
+      // My previous read of the code didn't see any filtering.
+      // Line 23 was: characters.where((c) => c.name.toLowerCase().contains(query)).toList();
+      // This shows BOTH.
+      
+      // So why did the user say they are not showing?
+      // Maybe because they are filtered out by some other logic?
+      // Or maybe the user WANTS them to be separated?
+      
+      // "Fix the issue where new group chats are not displayed in the character list (left drawer)"
+      // Maybe the "character list (left drawer)" refers to `SessionListDrawer`?
+      // Or `AppDrawer`?
+      // If it refers to `CharacterListScreen` (which is the main screen for managing characters),
+      // and they are not showing, maybe `isGroup` characters are somehow not being saved or loaded?
+      
+      // But if I add `showGroupsOnly` flag, I can control it.
+      
+      if (widget.showGroupsOnly) {
+         return matchesQuery && c.isGroup;
+      }
+      return matchesQuery; // Show all by default
+    }).toList();
 
     return Scaffold(
       backgroundColor: const Color(0xFF16161e),
       appBar: AppBar(
         backgroundColor: const Color(0xFF16161e),
         elevation: 0,
-        title: const Text('角色管理', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        title: Text(widget.showGroupsOnly ? '群组聊天' : '角色管理', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         actions: [
           IconButton(
             icon: const Icon(Icons.search, color: Colors.white70),
@@ -138,8 +174,9 @@ class _CharacterListScreenState extends ConsumerState<CharacterListScreen> {
       child: Container(
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
-          color: const Color(0xFF24283b),
+          color: char.isGroup ? const Color(0xFF3b243b) : const Color(0xFF24283b), // Distinct color for groups
           borderRadius: BorderRadius.circular(12),
+          border: char.isGroup ? Border.all(color: Colors.purpleAccent, width: 1) : null,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -158,7 +195,9 @@ class _CharacterListScreenState extends ConsumerState<CharacterListScreen> {
                     : null,
               ),
               child: char.avatarPath.isEmpty
-                  ? const Icon(Icons.person, size: 48, color: Colors.white24)
+                  ? (char.isGroup 
+                      ? const Icon(Icons.groups, size: 48, color: Colors.white24) 
+                      : const Icon(Icons.person, size: 48, color: Colors.white24))
                   : null,
             ),
           ),
@@ -173,11 +212,22 @@ class _CharacterListScreenState extends ConsumerState<CharacterListScreen> {
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        char.name,
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                      Row(
+                        children: [
+                          if (char.isGroup)
+                            const Padding(
+                              padding: EdgeInsets.only(right: 4),
+                              child: Icon(Icons.group, size: 16, color: Colors.purpleAccent),
+                            ),
+                          Expanded(
+                            child: Text(
+                              char.name,
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 4),
                       Text(
@@ -191,12 +241,13 @@ class _CharacterListScreenState extends ConsumerState<CharacterListScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
-                      IconButton(
-                        icon: const Icon(Icons.edit, size: 18, color: Colors.white70),
-                        onPressed: () {
-                          Navigator.push(context, MaterialPageRoute(builder: (_) => CharacterEditScreen(character: char)));
-                        },
-                      ),
+                      if (!char.isGroup) // Only edit non-group characters via standard edit screen for now
+                        IconButton(
+                          icon: const Icon(Icons.edit, size: 18, color: Colors.white70),
+                          onPressed: () {
+                            Navigator.push(context, MaterialPageRoute(builder: (_) => CharacterEditScreen(character: char)));
+                          },
+                        ),
                       IconButton(
                         icon: const Icon(Icons.delete, size: 18, color: Colors.white70),
                         onPressed: () => _confirmDelete(char),

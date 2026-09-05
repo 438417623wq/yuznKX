@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
+import 'package:uuid/uuid.dart';
 import '../../data/persona_provider.dart';
+import '../../domain/models/persona.dart';
 
 class PersonaEditScreen extends ConsumerStatefulWidget {
-  const PersonaEditScreen({super.key});
+  final Persona? persona;
+  const PersonaEditScreen({super.key, this.persona});
 
   @override
   ConsumerState<PersonaEditScreen> createState() => _PersonaEditScreenState();
@@ -19,10 +22,10 @@ class _PersonaEditScreenState extends ConsumerState<PersonaEditScreen> {
   @override
   void initState() {
     super.initState();
-    final persona = ref.read(personaProvider);
-    _nameController = TextEditingController(text: persona.name);
-    _descController = TextEditingController(text: persona.description);
-    _avatarPath = persona.avatarPath;
+    final p = widget.persona;
+    _nameController = TextEditingController(text: p?.name ?? 'User');
+    _descController = TextEditingController(text: p?.description ?? '');
+    _avatarPath = p?.avatarPath;
   }
 
   @override
@@ -50,14 +53,21 @@ class _PersonaEditScreenState extends ConsumerState<PersonaEditScreen> {
       return;
     }
 
-    final currentPersona = ref.read(personaProvider);
-    final updated = currentPersona.copyWith(
+    final newPersona = Persona(
+      id: widget.persona?.id ?? const Uuid().v4(),
       name: name,
       description: _descController.text,
-      avatarPath: _avatarPath,
+      avatarPath: _avatarPath ?? '',
     );
     
-    ref.read(personaProvider.notifier).updatePersona(updated);
+    ref.read(personaListProvider.notifier).save(newPersona);
+    
+    // If this is the first persona being created, make it active
+    final list = ref.read(personaListProvider);
+    if (list.isEmpty) {
+      ref.read(activePersonaIdProvider.notifier).setActive(newPersona.id);
+    }
+
     Navigator.pop(context);
   }
 

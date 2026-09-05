@@ -1,168 +1,482 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:uuid/uuid.dart';
-import 'dart:io';
 import 'package:image_picker/image_picker.dart';
-import '../../domain/models/character.dart';
-import '../../data/character_provider.dart';
-import '../../../world_info/data/world_info_provider.dart';
+import 'package:uuid/uuid.dart';
+
 import '../../../regex/data/regex_provider.dart';
+import '../../../regex/domain/models/regex_script.dart';
+import '../../../regex/presentation/screens/regex_list_screen.dart';
+import '../../../world_info/data/world_info_provider.dart';
+import '../../../world_info/domain/models/world_info.dart';
+import '../../../world_info/presentation/screens/world_info_list_screen.dart';
+import '../../data/character_provider.dart';
+import '../../domain/models/character.dart';
 
 class CharacterEditScreen extends ConsumerStatefulWidget {
   final Character? character;
+
   const CharacterEditScreen({super.key, this.character});
 
   @override
-  ConsumerState<CharacterEditScreen> createState() => _CharacterEditScreenState();
+  ConsumerState<CharacterEditScreen> createState() =>
+      _CharacterEditScreenState();
 }
 
-class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen> with SingleTickerProviderStateMixin {
-  late TabController _tabController;
+class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
+    with SingleTickerProviderStateMixin {
   final _formKey = GlobalKey<FormState>();
 
-  // Controllers
-  late TextEditingController _nameCtrl;
-  late TextEditingController _descCtrl;
-  late TextEditingController _creatorCtrl;
-  late TextEditingController _versionCtrl;
-  late TextEditingController _systemCtrl;
-  late TextEditingController _scenarioCtrl;
-  late TextEditingController _authorNoteCtrl;
-  late TextEditingController _depthCtrl;
-  late TextEditingController _freqCtrl;
-  late TextEditingController _firstMsgCtrl;
-  
+  late final TabController _tabController;
+  late final TextEditingController _nameCtrl;
+  late final TextEditingController _descriptionCtrl;
+  late final TextEditingController _personalityCtrl;
+  late final TextEditingController _systemPromptCtrl;
+  late final TextEditingController _creatorNotesCtrl;
+  late final TextEditingController _scenarioCtrl;
+  late final TextEditingController _exampleCtrl;
+  late final TextEditingController _authorsNoteCtrl;
+  late final TextEditingController _depthCtrl;
+  late final TextEditingController _frequencyCtrl;
+  late final TextEditingController _firstMessageCtrl;
+  late final TextEditingController _creatorCtrl;
+  late final TextEditingController _versionCtrl;
+  late final TextEditingController _preferredModelCtrl;
+
   String _avatarPath = '';
   List<String> _tags = [];
   List<String> _alternateGreetings = [];
   List<String> _worldInfoIds = [];
   List<String> _regexScriptIds = [];
-  
-  // Advanced (Mock for now or simple strings)
-  String? _boundModelId;
+  String? _characterBookId;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 4, vsync: this);
-    final c = widget.character;
-    
-    _nameCtrl = TextEditingController(text: c?.name ?? '');
-    _descCtrl = TextEditingController(text: c?.description ?? '');
-    _creatorCtrl = TextEditingController(text: c?.creator ?? 'User');
-    _versionCtrl = TextEditingController(text: c?.version ?? '1.0');
-    _systemCtrl = TextEditingController(text: c?.systemInstruction ?? '');
-    _scenarioCtrl = TextEditingController(text: c?.scenario ?? '');
-    _authorNoteCtrl = TextEditingController(text: c?.authorsNote ?? '');
-    _depthCtrl = TextEditingController(text: (c?.authorsNoteDepth ?? 4).toString());
-    _freqCtrl = TextEditingController(text: (c?.authorsNoteFrequency ?? 0).toString());
-    _firstMsgCtrl = TextEditingController(text: c?.firstMessage ?? '');
-    
-    _avatarPath = c?.avatarPath ?? '';
-    _tags = List.from(c?.tags ?? []);
-    _alternateGreetings = List.from(c?.alternateGreetings ?? []);
-    _boundModelId = c?.boundModelId;
-    _worldInfoIds = List.from(c?.worldInfoIds ?? []);
-    _regexScriptIds = List.from(c?.regexScriptIds ?? []);
+    final character = widget.character;
+
+    _nameCtrl = TextEditingController(text: character?.name ?? '');
+    _descriptionCtrl =
+        TextEditingController(text: character?.description ?? '');
+    _personalityCtrl = TextEditingController(
+      text: character?.personality.isNotEmpty == true
+          ? character!.personality
+          : character?.systemInstruction ?? '',
+    );
+    _systemPromptCtrl =
+        TextEditingController(text: character?.systemPrompt ?? '');
+    _creatorNotesCtrl =
+        TextEditingController(text: character?.creatorNotes ?? '');
+    _scenarioCtrl = TextEditingController(text: character?.scenario ?? '');
+    _exampleCtrl =
+        TextEditingController(text: character?.exampleDialogue ?? '');
+    _authorsNoteCtrl =
+        TextEditingController(text: character?.authorsNote ?? '');
+    _depthCtrl = TextEditingController(
+      text: (character?.authorsNoteDepth ?? 4).toString(),
+    );
+    _frequencyCtrl = TextEditingController(
+      text: (character?.authorsNoteFrequency ?? 0).toString(),
+    );
+    _firstMessageCtrl =
+        TextEditingController(text: character?.firstMessage ?? '');
+    _creatorCtrl = TextEditingController(text: character?.creator ?? '');
+    _versionCtrl = TextEditingController(text: character?.version ?? '1.0');
+    _preferredModelCtrl = TextEditingController(
+      text: character?.preferredModelName ?? '',
+    );
+
+    _avatarPath = character?.avatarPath ?? '';
+    _tags = List<String>.from(character?.tags ?? const []);
+    _alternateGreetings =
+        List<String>.from(character?.alternateGreetings ?? const []);
+    _worldInfoIds = List<String>.from(character?.worldInfoIds ?? const []);
+    _regexScriptIds = List<String>.from(character?.regexScriptIds ?? const []);
+    _characterBookId = character?.characterBookId;
   }
 
   @override
   void dispose() {
     _tabController.dispose();
     _nameCtrl.dispose();
-    _descCtrl.dispose();
+    _descriptionCtrl.dispose();
+    _personalityCtrl.dispose();
+    _systemPromptCtrl.dispose();
+    _creatorNotesCtrl.dispose();
+    _scenarioCtrl.dispose();
+    _exampleCtrl.dispose();
+    _authorsNoteCtrl.dispose();
+    _depthCtrl.dispose();
+    _frequencyCtrl.dispose();
+    _firstMessageCtrl.dispose();
     _creatorCtrl.dispose();
     _versionCtrl.dispose();
-    _systemCtrl.dispose();
-    _scenarioCtrl.dispose();
-    _authorNoteCtrl.dispose();
-    _depthCtrl.dispose();
-    _freqCtrl.dispose();
-    _firstMsgCtrl.dispose();
+    _preferredModelCtrl.dispose();
     super.dispose();
   }
 
-  void _save() {
-    if (!_formKey.currentState!.validate()) return;
+  Future<void> _pickAvatar() async {
+    final picker = ImagePicker();
+    final file = await picker.pickImage(source: ImageSource.gallery);
+    if (file == null) {
+      return;
+    }
+    setState(() {
+      _avatarPath = file.path;
+    });
+  }
 
-    final newChar = Character(
+  void _save() {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    final selectedCharacterBook = _lookupWorldInfo(_characterBookId);
+    final rawCharacterBook = selectedCharacterBook == null
+        ? null
+        : _worldInfoToCharacterBook(selectedCharacterBook);
+
+    final character = Character(
       id: widget.character?.id ?? const Uuid().v4(),
-      name: _nameCtrl.text,
-      description: _descCtrl.text,
+      name: _nameCtrl.text.trim(),
+      description: _descriptionCtrl.text.trim(),
+      personality: _personalityCtrl.text.trim(),
+      systemPrompt: _systemPromptCtrl.text.trim(),
+      creatorNotes: _creatorNotesCtrl.text.trim(),
       avatarPath: _avatarPath,
-      tags: _tags,
-      creator: _creatorCtrl.text,
-      version: _versionCtrl.text,
-      systemInstruction: _systemCtrl.text,
-      scenario: _scenarioCtrl.text,
-      authorsNote: _authorNoteCtrl.text,
-      authorsNoteDepth: int.tryParse(_depthCtrl.text) ?? 4,
-      authorsNoteFrequency: int.tryParse(_freqCtrl.text) ?? 0,
-      firstMessage: _firstMsgCtrl.text,
-      alternateGreetings: _alternateGreetings,
-      boundModelId: _boundModelId,
-      // Persist existing IDs or handle advanced lists
-      worldInfoIds: _worldInfoIds,
-      regexScriptIds: _regexScriptIds,
+      tags: List<String>.from(_tags),
+      creator: _creatorCtrl.text.trim(),
+      version:
+          _versionCtrl.text.trim().isEmpty ? '1.0' : _versionCtrl.text.trim(),
+      systemInstruction: _personalityCtrl.text.trim(),
+      scenario: _scenarioCtrl.text.trim(),
+      authorsNote: _authorsNoteCtrl.text.trim(),
+      authorsNoteDepth: int.tryParse(_depthCtrl.text.trim()) ?? 4,
+      authorsNoteFrequency: int.tryParse(_frequencyCtrl.text.trim()) ?? 0,
+      firstMessage: _firstMessageCtrl.text,
+      alternateGreetings: List<String>.from(_alternateGreetings),
+      exampleDialogue: _exampleCtrl.text,
+      preferredModelName: _preferredModelCtrl.text.trim().isEmpty
+          ? null
+          : _preferredModelCtrl.text.trim(),
+      characterBookId: _characterBookId,
+      worldInfoIds: _worldInfoIds
+          .where((id) => id.trim().isNotEmpty && id != _characterBookId)
+          .toList(growable: false),
+      regexScriptIds: _regexScriptIds
+          .where((id) => id.trim().isNotEmpty)
+          .toList(growable: false),
+      cardSpec: widget.character?.cardSpec ?? 'chara_card_v2',
+      cardSpecVersion: widget.character?.cardSpecVersion ?? '2.0',
+      rawCardData: widget.character?.rawCardData ?? const {},
+      rawExtensions: widget.character?.rawExtensions ?? const {},
+      rawCharacterBook: rawCharacterBook,
     );
 
-    ref.read(characterListProvider.notifier).save(newChar);
+    ref.read(characterListProvider.notifier).save(character);
     Navigator.pop(context);
+  }
+
+  WorldInfo? _lookupWorldInfo(String? id) {
+    if (id == null || id.trim().isEmpty) {
+      return null;
+    }
+
+    final all = ref.read(worldInfoProvider);
+    for (final item in all) {
+      if (item.id == id) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  Map<String, dynamic> _worldInfoToCharacterBook(WorldInfo worldInfo) {
+    return {
+      'name': worldInfo.name,
+      'entries': [
+        for (final entry in worldInfo.entries) entry.toJson(),
+      ],
+    };
+  }
+
+  Future<void> _showAddTagDialog() async {
+    final controller = TextEditingController();
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('添加标签'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '标签名称',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = controller.text.trim();
+              if (value.isNotEmpty) {
+                setState(() {
+                  _tags = [..._tags, value];
+                });
+              }
+              Navigator.pop(context);
+            },
+            child: const Text('添加'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showCharacterBookSelector(List<WorldInfo> allWorldInfo) async {
+    String? selectedId = _characterBookId;
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('选择角色卡世界书'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                RadioListTile<String?>(
+                  value: null,
+                  groupValue: selectedId,
+                  title: const Text('不绑定角色卡世界书'),
+                  onChanged: (value) {
+                    setDialogState(() {
+                      selectedId = value;
+                    });
+                  },
+                ),
+                for (final worldInfo in allWorldInfo)
+                  RadioListTile<String?>(
+                    value: worldInfo.id,
+                    groupValue: selectedId,
+                    title: Text(worldInfo.name),
+                    subtitle: Text('${worldInfo.entries.length} 条目'),
+                    onChanged: (value) {
+                      setDialogState(() {
+                        selectedId = value;
+                      });
+                    },
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                setState(() {
+                  _characterBookId = selectedId;
+                  _worldInfoIds.removeWhere((id) => id == selectedId);
+                });
+                Navigator.pop(context);
+              },
+              child: const Text('确定'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showWorldInfoSelector(List<WorldInfo> allWorldInfo) async {
+    final selected = _worldInfoIds.toSet();
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('选择全局世界书'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                for (final worldInfo in allWorldInfo)
+                  if (worldInfo.id != _characterBookId)
+                    CheckboxListTile(
+                      value: selected.contains(worldInfo.id),
+                      title: Text(worldInfo.name),
+                      subtitle: Text('${worldInfo.entries.length} 条目'),
+                      onChanged: (value) {
+                        setDialogState(() {
+                          if (value == true) {
+                            selected.add(worldInfo.id);
+                          } else {
+                            selected.remove(worldInfo.id);
+                          }
+                        });
+                      },
+                    ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                setState(() {
+                  _worldInfoIds = selected.toList(growable: false);
+                });
+                Navigator.pop(context);
+              },
+              child: const Text('确定'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showRegexSelector(List<RegexScript> allRegex) async {
+    final selected = _regexScriptIds.toSet();
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('选择角色正则'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                for (final script in allRegex)
+                  CheckboxListTile(
+                    value: selected.contains(script.id),
+                    title: Text(script.scriptName),
+                    subtitle: Text(
+                      script.findRegex,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    onChanged: (value) {
+                      setDialogState(() {
+                        if (value == true) {
+                          selected.add(script.id);
+                        } else {
+                          selected.remove(script.id);
+                        }
+                      });
+                    },
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                setState(() {
+                  _regexScriptIds = selected.toList(growable: false);
+                });
+                Navigator.pop(context);
+              },
+              child: const Text('确定'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _editWorldInfo(WorldInfo? worldInfo) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => WorldInfoEditScreen(worldInfo: worldInfo),
+      ),
+    );
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _editRegex(RegexScript script) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => RegexEditScreen(script: script)),
+    );
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final allWorldInfo = ref.watch(worldInfoProvider);
+    final allRegex = ref.watch(regexScriptsProvider);
+    final characterBook = _lookupWorldInfo(_characterBookId);
+    final boundWorldInfo = allWorldInfo
+        .where((item) => _worldInfoIds.contains(item.id))
+        .toList(growable: false);
+    final boundRegex = allRegex
+        .where((item) => _regexScriptIds.contains(item.id))
+        .toList(growable: false);
+
     return Scaffold(
-      backgroundColor: const Color(0xFF16161e),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF16161e),
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios, color: Colors.white),
-          onPressed: () => Navigator.pop(context),
-        ),
+        title: Text(widget.character == null ? '新建角色卡' : '编辑角色卡'),
         actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: ElevatedButton.icon(
-              onPressed: _save,
-              icon: const Icon(Icons.check, size: 16),
-              label: const Text('保存'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blueAccent,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              ),
-            ),
+          IconButton(
+            onPressed: _save,
+            icon: const Icon(Icons.save_outlined),
+            tooltip: '保存',
           ),
         ],
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(text: '基本'),
+            Tab(text: '卡片'),
+            Tab(text: '开场'),
+            Tab(text: '绑定'),
+          ],
+        ),
       ),
       body: Form(
         key: _formKey,
         child: Column(
           children: [
             _buildHeader(),
-            TabBar(
-              controller: _tabController,
-              isScrollable: false,
-              labelColor: Colors.blueAccent,
-              unselectedLabelColor: Colors.grey,
-              indicatorColor: Colors.blueAccent,
-              tabs: const [
-                Tab(text: '基础信息', icon: Icon(Icons.person_outline)),
-                Tab(text: '人设详情', icon: Icon(Icons.description_outlined)),
-                Tab(text: '开场白', icon: Icon(Icons.chat_bubble_outline)),
-                Tab(text: '高级配置', icon: Icon(Icons.settings_suggest_outlined)),
-              ],
-            ),
             Expanded(
               child: TabBarView(
                 controller: _tabController,
                 children: [
-                  _buildBasicInfoTab(),
-                  _buildDetailsTab(),
-                  _buildFirstMessageTab(),
-                  _buildAdvancedTab(),
+                  _buildBasicTab(),
+                  _buildCardTab(),
+                  _buildGreetingTab(),
+                  _buildBindingsTab(
+                    allWorldInfo: allWorldInfo,
+                    allRegex: allRegex,
+                    characterBook: characterBook,
+                    boundWorldInfo: boundWorldInfo,
+                    boundRegex: boundRegex,
+                  ),
                 ],
               ),
             ),
@@ -173,200 +487,246 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen> with 
   }
 
   Widget _buildHeader() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-      child: Row(
-        children: [
-          GestureDetector(
-            onTap: _pickAvatar,
-            child: Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
-                color: Colors.grey[800],
-                borderRadius: BorderRadius.circular(16),
-                image: _avatarPath.isNotEmpty
-                    ? DecorationImage(
-                        image: FileImage(File(_avatarPath)),
-                        fit: BoxFit.cover,
-                      )
-                    : const DecorationImage(
-                        image: NetworkImage('https://via.placeholder.com/150'),
-                        fit: BoxFit.cover,
-                      ),
+    final title =
+        _nameCtrl.text.trim().isEmpty ? '未命名角色卡' : _nameCtrl.text.trim();
+    final creator =
+        _creatorCtrl.text.trim().isEmpty ? '未知作者' : _creatorCtrl.text.trim();
+    final version =
+        _versionCtrl.text.trim().isEmpty ? '1.0' : _versionCtrl.text.trim();
+
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+        child: Row(
+          children: [
+            InkWell(
+              borderRadius: BorderRadius.circular(18),
+              onTap: _pickAvatar,
+              child: Container(
+                width: 84,
+                height: 84,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(18),
+                  color: Theme.of(context).colorScheme.surfaceContainerLow,
+                  image: _avatarPath.isEmpty
+                      ? null
+                      : DecorationImage(
+                          image: FileImage(File(_avatarPath)),
+                          fit: BoxFit.cover,
+                        ),
+                ),
+                child: _avatarPath.isEmpty
+                    ? const Icon(Icons.add_a_photo_outlined)
+                    : null,
               ),
-              child: _avatarPath.isEmpty 
-                  ? const Icon(Icons.add_a_photo, color: Colors.white54)
-                  : null,
             ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TextFormField(
-                  controller: _nameCtrl,
-                  style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
-                  decoration: const InputDecoration(
-                    hintText: '角色名称',
-                    hintStyle: TextStyle(color: Colors.white38),
-                    border: InputBorder.none,
-                    isDense: true,
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
                   ),
-                  validator: (v) => v!.isEmpty ? '请输入名称' : null,
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.grey[800],
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(_creatorCtrl.text, style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                    ),
-                    const SizedBox(width: 8),
-                    Text('v${_versionCtrl.text}', style: const TextStyle(color: Colors.white38, fontSize: 12)),
-                  ],
-                ),
-              ],
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _buildHeaderChip(creator),
+                      _buildHeaderChip('v$version'),
+                      if (_characterBookId != null) _buildHeaderChip('角色卡世界书'),
+                      if (_worldInfoIds.isNotEmpty)
+                        _buildHeaderChip('全局世界书 ${_worldInfoIds.length}'),
+                      if (_regexScriptIds.isNotEmpty)
+                        _buildHeaderChip('正则 ${_regexScriptIds.length}'),
+                    ],
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 
-  Future<void> _pickAvatar() async {
-    final picker = ImagePicker();
-    final pickedFile = await picker.pickImage(source: ImageSource.gallery);
-    if (pickedFile != null) {
-      setState(() {
-        _avatarPath = pickedFile.path;
-      });
-    }
-  }
-
-  Widget _buildBasicInfoTab() {
+  Widget _buildBasicTab() {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // Tags
-        Wrap(
-          spacing: 8,
-          children: [
-            ..._tags.map((tag) => Chip(
-              label: Text(tag),
-              backgroundColor: Colors.blueAccent.withOpacity(0.1),
-              labelStyle: const TextStyle(color: Colors.blueAccent),
-              onDeleted: () => setState(() => _tags.remove(tag)),
-            )),
-            ActionChip(
-              label: const Text('+ 添加标签'),
-              backgroundColor: Colors.grey[800],
-              labelStyle: const TextStyle(color: Colors.white70),
-              onPressed: () {
-                _showAddTagDialog();
-              },
-            ),
-          ],
+        _buildSectionCard(
+          title: '基础信息',
+          child: Column(
+            children: [
+              TextFormField(
+                controller: _nameCtrl,
+                decoration: const InputDecoration(
+                  labelText: '名称',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return '请输入角色名称';
+                  }
+                  return null;
+                },
+                onChanged: (_) => setState(() {}),
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _creatorCtrl,
+                decoration: const InputDecoration(
+                  labelText: '作者',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (_) => setState(() {}),
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _versionCtrl,
+                decoration: const InputDecoration(
+                  labelText: '版本',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (_) => setState(() {}),
+              ),
+            ],
+          ),
         ),
-        const SizedBox(height: 24),
-        _buildCard(
-          title: '简介描述',
+        const SizedBox(height: 16),
+        _buildSectionCard(
+          title: '描述',
           child: TextFormField(
-            controller: _descCtrl,
-            style: const TextStyle(color: Colors.white),
-            maxLines: 3,
+            controller: _descriptionCtrl,
+            minLines: 4,
+            maxLines: 6,
             decoration: const InputDecoration(
-              hintText: '简短描述这个角色...',
-              hintStyle: TextStyle(color: Colors.white38),
-              border: InputBorder.none,
+              labelText: 'Description',
+              border: OutlineInputBorder(),
             ),
           ),
         ),
         const SizedBox(height: 16),
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: const Color(0xFF24283b).withOpacity(0.5),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: SelectableText(
-            '角色 ID: ${widget.character?.id ?? "New"}',
-            style: const TextStyle(color: Colors.white38, fontSize: 12),
+        _buildSectionCard(
+          title: '标签',
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final tag in _tags)
+                InputChip(
+                  label: Text(tag),
+                  onDeleted: () {
+                    setState(() {
+                      _tags = _tags.where((item) => item != tag).toList();
+                    });
+                  },
+                ),
+              ActionChip(
+                label: const Text('添加标签'),
+                avatar: const Icon(Icons.add, size: 18),
+                onPressed: _showAddTagDialog,
+              ),
+            ],
           ),
         ),
       ],
     );
   }
 
-  Widget _buildDetailsTab() {
+  Widget _buildCardTab() {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _buildSectionHeader('SYSTEM INSTRUCTION (核心设定)'),
-        _buildCard(
+        _buildSectionCard(
+          title: '角色性格 / Personality',
           child: TextFormField(
-            controller: _systemCtrl,
-            style: const TextStyle(color: Colors.white),
-            maxLines: 10,
+            controller: _personalityCtrl,
+            minLines: 8,
+            maxLines: 12,
             decoration: const InputDecoration(
-              hintText: '这是角色的灵魂。包含性格、外貌及行为逻辑。',
-              hintStyle: TextStyle(color: Colors.white38),
-              border: InputBorder.none,
+              border: OutlineInputBorder(),
             ),
           ),
         ),
-        const SizedBox(height: 24),
-        _buildSectionHeader('SCENARIO (场景/背景)'),
-        _buildCard(
+        const SizedBox(height: 16),
+        _buildSectionCard(
+          title: 'System Prompt',
+          child: TextFormField(
+            controller: _systemPromptCtrl,
+            minLines: 4,
+            maxLines: 8,
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _buildSectionCard(
+          title: 'Scenario',
           child: TextFormField(
             controller: _scenarioCtrl,
-            style: const TextStyle(color: Colors.white),
-            maxLines: 4,
+            minLines: 4,
+            maxLines: 6,
             decoration: const InputDecoration(
-              hintText: '未设定场景...',
-              hintStyle: TextStyle(color: Colors.white38),
-              border: InputBorder.none,
+              border: OutlineInputBorder(),
             ),
           ),
         ),
-        const SizedBox(height: 24),
-        _buildSectionHeader('AUTHOR\'S NOTE (作者注释)'),
-        _buildCard(
+        const SizedBox(height: 16),
+        _buildSectionCard(
+          title: 'Creator Notes',
+          child: TextFormField(
+            controller: _creatorNotesCtrl,
+            minLines: 3,
+            maxLines: 5,
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _buildSectionCard(
+          title: 'Depth Prompt / Post History Instructions',
           child: Column(
             children: [
               TextFormField(
-                controller: _authorNoteCtrl,
-                style: const TextStyle(color: Colors.white),
-                maxLines: 3,
+                controller: _authorsNoteCtrl,
+                minLines: 4,
+                maxLines: 6,
                 decoration: const InputDecoration(
-                  hintText: '插入到 Prompt 中的额外注释...',
-                  hintStyle: TextStyle(color: Colors.white38),
-                  border: InputBorder.none,
+                  border: OutlineInputBorder(),
                 ),
               ),
-              const Divider(color: Colors.white10),
+              const SizedBox(height: 12),
               Row(
                 children: [
                   Expanded(
                     child: TextFormField(
                       controller: _depthCtrl,
-                      style: const TextStyle(color: Colors.white),
                       keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: '深度 (Depth)', labelStyle: TextStyle(color: Colors.white54)),
+                      decoration: const InputDecoration(
+                        labelText: 'Depth',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                   ),
-                  const SizedBox(width: 16),
+                  const SizedBox(width: 12),
                   Expanded(
                     child: TextFormField(
-                      controller: _freqCtrl,
-                      style: const TextStyle(color: Colors.white),
+                      controller: _frequencyCtrl,
                       keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: '频率 (Freq)', labelStyle: TextStyle(color: Colors.white54)),
+                      decoration: const InputDecoration(
+                        labelText: 'Frequency',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                   ),
                 ],
@@ -378,219 +738,295 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen> with 
     );
   }
 
-  Widget _buildFirstMessageTab() {
+  Widget _buildGreetingTab() {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _buildSectionHeader('开场白 (FIRST MESSAGE)'),
-        _buildCard(
+        _buildSectionCard(
+          title: 'First Message',
           child: TextFormField(
-            controller: _firstMsgCtrl,
-            style: const TextStyle(color: Colors.white),
-            maxLines: 6,
+            controller: _firstMessageCtrl,
+            minLines: 5,
+            maxLines: 8,
             decoration: const InputDecoration(
-              hintText: '角色的第一句话...',
-              hintStyle: TextStyle(color: Colors.white38),
-              border: InputBorder.none,
+              border: OutlineInputBorder(),
             ),
           ),
         ),
-        const SizedBox(height: 24),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            _buildSectionHeader('备选开场白 (ALTERNATES)'),
-            TextButton.icon(
-              onPressed: () {
-                setState(() {
-                  _alternateGreetings.add('');
-                });
-              },
-              icon: const Icon(Icons.add, size: 16),
-              label: const Text('添加'),
-            ),
-          ],
-        ),
-        if (_alternateGreetings.isEmpty)
-          const Center(child: Padding(padding: EdgeInsets.all(16), child: Text('暂无备选开场白', style: TextStyle(color: Colors.white24)))),
-        ..._alternateGreetings.asMap().entries.map((entry) {
-          final index = entry.key;
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: _buildCard(
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      initialValue: entry.value,
-                      style: const TextStyle(color: Colors.white),
-                      maxLines: 3,
-                      onChanged: (v) => _alternateGreetings[index] = v,
-                      decoration: const InputDecoration(border: InputBorder.none),
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.delete, color: Colors.redAccent),
-                    onPressed: () => setState(() => _alternateGreetings.removeAt(index)),
-                  ),
-                ],
-              ),
-            ),
-          );
-        }),
-      ],
-    );
-  }
-
-  Widget _buildAdvancedTab() {
-    final allWorldInfo = ref.watch(worldInfoProvider);
-    final allRegex = ref.watch(regexScriptsProvider);
-
-    final boundWorldInfo = allWorldInfo.where((e) => _worldInfoIds.contains(e.id)).toList();
-    final boundRegex = allRegex.where((e) => _regexScriptIds.contains(e.id)).toList();
-
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        _buildSectionHeader('模型配置'),
-        _buildCard(
+        const SizedBox(height: 16),
+        _buildSectionCard(
+          title: 'Alternate Greetings',
+          trailing: TextButton.icon(
+            onPressed: () {
+              setState(() {
+                _alternateGreetings = [..._alternateGreetings, ''];
+              });
+            },
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('添加'),
+          ),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('当前绑定模型: gemini-3-flash-preview', style: TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              const Text('为此角色指定特定的模型，覆盖全局默认设置。', style: TextStyle(color: Colors.white54, fontSize: 12)),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                value: _boundModelId, // Null means default
-                dropdownColor: const Color(0xFF24283b),
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              if (_alternateGreetings.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Text('暂无备用开场白'),
                 ),
-                items: const [
-                  DropdownMenuItem(value: null, child: Text('使用全局默认')),
-                  DropdownMenuItem(value: 'gemini-pro', child: Text('Gemini Pro')),
-                  DropdownMenuItem(value: 'gpt-4', child: Text('GPT-4')),
-                ],
-                onChanged: (v) => setState(() => _boundModelId = v),
-              ),
+              for (final entry in _alternateGreetings.asMap().entries)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: TextFormField(
+                          initialValue: entry.value,
+                          minLines: 2,
+                          maxLines: 4,
+                          decoration: InputDecoration(
+                            labelText: '备用开场白 ${entry.key + 1}',
+                            border: const OutlineInputBorder(),
+                          ),
+                          onChanged: (value) {
+                            _alternateGreetings[entry.key] = value;
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        onPressed: () {
+                          setState(() {
+                            _alternateGreetings.removeAt(entry.key);
+                          });
+                        },
+                        icon: const Icon(Icons.delete_outline),
+                      ),
+                    ],
+                  ),
+                ),
             ],
           ),
         ),
-        const SizedBox(height: 24),
-        _buildSectionHeader('角色世界书'),
-        if (boundWorldInfo.isEmpty)
-          _buildCard(
-            child: const Center(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('该角色未包含内置世界书', style: TextStyle(color: Colors.white24)),
-              ),
+        const SizedBox(height: 16),
+        _buildSectionCard(
+          title: 'Example Dialogue',
+          child: TextFormField(
+            controller: _exampleCtrl,
+            minLines: 6,
+            maxLines: 10,
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
             ),
-          )
-        else
-          ...boundWorldInfo.map((wi) => Padding(
-            padding: const EdgeInsets.only(bottom: 8.0),
-            child: _buildCard(
-              child: ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: Text(wi.name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                subtitle: Text('${wi.entries.length} entries', style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                trailing: IconButton(
-                  icon: const Icon(Icons.link_off, color: Colors.redAccent),
-                  onPressed: () => setState(() => _worldInfoIds.remove(wi.id)),
-                  tooltip: '移除绑定',
-                ),
-              ),
-            ),
-          )),
-        
-        const SizedBox(height: 24),
-        _buildSectionHeader('角色正则脚本'),
-        if (boundRegex.isEmpty)
-          _buildCard(
-            child: const Center(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('暂无内置正则脚本', style: TextStyle(color: Colors.white24)),
-              ),
-            ),
-          )
-        else
-          ...boundRegex.map((script) => Padding(
-            padding: const EdgeInsets.only(bottom: 8.0),
-            child: _buildCard(
-              child: ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: Text(script.scriptName, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                subtitle: Text(script.findRegex, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white38, fontSize: 12)),
-                trailing: IconButton(
-                  icon: const Icon(Icons.link_off, color: Colors.redAccent),
-                  onPressed: () => setState(() => _regexScriptIds.remove(script.id)),
-                  tooltip: '移除绑定',
-                ),
-              ),
-            ),
-          )),
+          ),
+        ),
       ],
     );
   }
 
-  Widget _buildCard({required Widget child, String? title}) {
-    return Container(
-      width: double.infinity,
+  Widget _buildBindingsTab({
+    required List<WorldInfo> allWorldInfo,
+    required List<RegexScript> allRegex,
+    required WorldInfo? characterBook,
+    required List<WorldInfo> boundWorldInfo,
+    required List<RegexScript> boundRegex,
+  }) {
+    return ListView(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF24283b),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white10),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (title != null) ...[
-            Text(title, style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 12),
-          ],
-          child,
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSectionHeader(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8, left: 4),
-      child: Text(title, style: const TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.bold)),
-    );
-  }
-
-  void _showAddTagDialog() {
-    final controller = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF24283b),
-        title: const Text('添加标签', style: TextStyle(color: Colors.white)),
-        content: TextField(
-          controller: controller,
-          style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(hintText: 'Tag name', hintStyle: TextStyle(color: Colors.white38)),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          TextButton(
-            onPressed: () {
-              if (controller.text.isNotEmpty) {
-                setState(() => _tags.add(controller.text));
-              }
-              Navigator.pop(ctx);
-            },
-            child: const Text('添加'),
+      children: [
+        _buildSectionCard(
+          title: '角色卡世界书',
+          trailing: Wrap(
+            spacing: 8,
+            children: [
+              TextButton(
+                onPressed: () => _showCharacterBookSelector(allWorldInfo),
+                child: const Text('选择'),
+              ),
+              TextButton(
+                onPressed: () => _editWorldInfo(null),
+                child: const Text('新建'),
+              ),
+            ],
           ),
-        ],
+          child: characterBook == null
+              ? const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Text('当前没有绑定角色卡世界书'),
+                )
+              : ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(characterBook.name),
+                  subtitle: Text('${characterBook.entries.length} 条目'),
+                  trailing: Wrap(
+                    spacing: 8,
+                    children: [
+                      IconButton(
+                        onPressed: () => _editWorldInfo(characterBook),
+                        icon: const Icon(Icons.edit_outlined),
+                        tooltip: '编辑',
+                      ),
+                      IconButton(
+                        onPressed: () {
+                          setState(() {
+                            _characterBookId = null;
+                          });
+                        },
+                        icon: const Icon(Icons.link_off_outlined),
+                        tooltip: '解绑',
+                      ),
+                    ],
+                  ),
+                ),
+        ),
+        const SizedBox(height: 16),
+        _buildSectionCard(
+          title: '全局世界书',
+          trailing: TextButton.icon(
+            onPressed: () => _showWorldInfoSelector(allWorldInfo),
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('管理'),
+          ),
+          child: Column(
+            children: [
+              if (boundWorldInfo.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Text('当前没有绑定全局世界书'),
+                ),
+              for (final worldInfo in boundWorldInfo)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(worldInfo.name),
+                  subtitle: Text('${worldInfo.entries.length} 条目'),
+                  trailing: Wrap(
+                    spacing: 8,
+                    children: [
+                      IconButton(
+                        onPressed: () => _editWorldInfo(worldInfo),
+                        icon: const Icon(Icons.edit_outlined),
+                        tooltip: '编辑',
+                      ),
+                      IconButton(
+                        onPressed: () {
+                          setState(() {
+                            _worldInfoIds = _worldInfoIds
+                                .where((id) => id != worldInfo.id)
+                                .toList();
+                          });
+                        },
+                        icon: const Icon(Icons.link_off_outlined),
+                        tooltip: '解绑',
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _buildSectionCard(
+          title: '角色正则',
+          trailing: TextButton.icon(
+            onPressed: () => _showRegexSelector(allRegex),
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('管理'),
+          ),
+          child: Column(
+            children: [
+              TextFormField(
+                controller: _preferredModelCtrl,
+                decoration: const InputDecoration(
+                  labelText: '角色偏好模型名',
+                  helperText: '可选，覆盖当前聊天使用的默认模型名',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (boundRegex.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Text('当前没有绑定角色正则'),
+                ),
+              for (final script in boundRegex)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(script.scriptName),
+                  subtitle: Text(
+                    script.findRegex,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: Wrap(
+                    spacing: 8,
+                    children: [
+                      IconButton(
+                        onPressed: () => _editRegex(script),
+                        icon: const Icon(Icons.edit_outlined),
+                        tooltip: '编辑',
+                      ),
+                      IconButton(
+                        onPressed: () {
+                          setState(() {
+                            _regexScriptIds = _regexScriptIds
+                                .where((id) => id != script.id)
+                                .toList();
+                          });
+                        },
+                        icon: const Icon(Icons.link_off_outlined),
+                        tooltip: '解绑',
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSectionCard({
+    required String title,
+    required Widget child,
+    Widget? trailing,
+  }) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                ),
+                if (trailing != null) trailing,
+              ],
+            ),
+            const SizedBox(height: 12),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeaderChip(String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: Theme.of(context).textTheme.labelMedium,
       ),
     );
   }

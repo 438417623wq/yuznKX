@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../features/settings/presentation/screens/storage_management_screen.dart';
+import '../../features/character/presentation/screens/character_list_screen.dart';
+
 class AppDrawer extends StatelessWidget {
   const AppDrawer({super.key});
 
@@ -37,9 +40,13 @@ class AppDrawer extends StatelessWidget {
                 ],
               ),
             ),
-            _buildDrawerItem(context, Icons.person, "角色管理", () {}),
+            _buildDrawerItem(context, Icons.person, "角色管理", () {
+               Navigator.push(context, MaterialPageRoute(builder: (_) => const CharacterListScreen(showGroupsOnly: false)));
+            }),
             _buildDrawerItem(context, Icons.image, "背景设置", () {}),
-            _buildDrawerItem(context, Icons.groups, "群组聊天", () {}),
+            _buildDrawerItem(context, Icons.groups, "群组聊天", () {
+               Navigator.push(context, MaterialPageRoute(builder: (_) => const CharacterListScreen(showGroupsOnly: true)));
+            }),
             const Divider(color: Colors.grey),
             _buildDrawerItem(context, Icons.account_circle, "用户档案", () {}),
             _buildDrawerItem(context, Icons.api, "API 连接", () {
@@ -49,7 +56,9 @@ class AppDrawer extends StatelessWidget {
             _buildDrawerItem(context, Icons.book, "世界书 (Lorebook)", () {}),
             const Divider(color: Colors.grey),
             _buildDrawerItem(context, Icons.extension, "插件扩展", () {}),
-            _buildDrawerItem(context, Icons.bar_chart, "统计数据", () {}),
+            _buildDrawerItem(context, Icons.storage, "存储与数据", () {
+              Navigator.push(context, MaterialPageRoute(builder: (_) => const StorageManagementScreen()));
+            }),
             _buildDrawerItem(context, Icons.help, "帮助与文档", () {}),
           ],
         ),

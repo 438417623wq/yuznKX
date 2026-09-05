@@ -7,6 +7,7 @@ class ApiConnection {
   final String baseUrl;
   final String apiKey;
   final String model;
+  final String? localModelPath;
   final Map<String, dynamic> parameters;
 
   ApiConnection({
@@ -16,6 +17,7 @@ class ApiConnection {
     required this.baseUrl,
     required this.apiKey,
     required this.model,
+    this.localModelPath,
     this.parameters = const {},
   });
 
@@ -25,6 +27,7 @@ class ApiConnection {
     String baseUrl = '',
     String apiKey = '',
     String model = '',
+    String? localModelPath,
   }) {
     return ApiConnection(
       id: const Uuid().v4(),
@@ -33,6 +36,7 @@ class ApiConnection {
       baseUrl: baseUrl,
       apiKey: apiKey,
       model: model,
+      localModelPath: localModelPath,
     );
   }
 
@@ -44,6 +48,7 @@ class ApiConnection {
       'baseUrl': baseUrl,
       'apiKey': apiKey,
       'model': model,
+      'localModelPath': localModelPath,
       'parameters': parameters,
     };
   }
@@ -56,6 +61,7 @@ class ApiConnection {
       baseUrl: json['baseUrl'] as String? ?? '',
       apiKey: json['apiKey'] as String? ?? '',
       model: json['model'] as String? ?? '',
+      localModelPath: json['localModelPath'] as String?,
       parameters: Map<String, dynamic>.from(json['parameters'] ?? {}),
     );
   }
@@ -66,6 +72,7 @@ class ApiConnection {
     String? baseUrl,
     String? apiKey,
     String? model,
+    String? localModelPath,
     Map<String, dynamic>? parameters,
   }) {
     return ApiConnection(
@@ -75,6 +82,7 @@ class ApiConnection {
       baseUrl: baseUrl ?? this.baseUrl,
       apiKey: apiKey ?? this.apiKey,
       model: model ?? this.model,
+      localModelPath: localModelPath ?? this.localModelPath,
       parameters: parameters ?? this.parameters,
     );
   }
@@ -85,7 +93,8 @@ enum ApiPlatform {
   claude('Claude (Anthropic)', 'https://api.anthropic.com'),
   deepseek('DeepSeek', 'https://api.deepseek.com'),
   customOpenAi('自定义 (OpenAI 协议)', ''),
-  customGemini('自定义 (Gemini 协议)', '');
+  customGemini('自定义 (Gemini 协议)', ''),
+  local('Local GGUF (本地模型)', '');
 
   final String label;
   final String defaultBaseUrl;

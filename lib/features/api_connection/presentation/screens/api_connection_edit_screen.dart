@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
+import 'package:file_picker/file_picker.dart';
 import '../../data/api_connection_provider.dart';
 import '../../domain/models/api_connection.dart';
 
@@ -22,7 +23,14 @@ class _ApiConnectionEditScreenState extends ConsumerState<ApiConnectionEditScree
   late TextEditingController _modelController;
   
   ApiPlatform _selectedPlatform = ApiPlatform.customOpenAi;
+  String? _localModelPath;
   bool _isTesting = false;
+
+  // Local optimization settings
+  double _nThreads = 4;
+  double _nBatch = 512;
+  double _nContext = 2048;
+  bool _flashAttn = false;
 
   @override
   void initState() {
@@ -32,6 +40,7 @@ class _ApiConnectionEditScreenState extends ConsumerState<ApiConnectionEditScree
     _baseUrlController = TextEditingController(text: c?.baseUrl ?? '');
     _apiKeyController = TextEditingController(text: c?.apiKey ?? '');
     _modelController = TextEditingController(text: c?.model ?? 'gpt-3.5-turbo');
+    _localModelPath = c?.localModelPath;
     
     if (c != null) {
       try {
@@ -39,6 +48,12 @@ class _ApiConnectionEditScreenState extends ConsumerState<ApiConnectionEditScree
       } catch (_) {
         _selectedPlatform = ApiPlatform.customOpenAi;
       }
+      
+      // Load params
+      if (c.parameters.containsKey('n_threads')) _nThreads = (c.parameters['n_threads'] as num).toDouble();
+      if (c.parameters.containsKey('n_batch')) _nBatch = (c.parameters['n_batch'] as num).toDouble();
+      if (c.parameters.containsKey('context_size')) _nContext = (c.parameters['context_size'] as num).toDouble();
+      if (c.parameters.containsKey('flash_attn')) _flashAttn = c.parameters['flash_attn'] as bool;
     }
   }
 
@@ -49,6 +64,29 @@ class _ApiConnectionEditScreenState extends ConsumerState<ApiConnectionEditScree
     _apiKeyController.dispose();
     _modelController.dispose();
     super.dispose();
+  }
+
+  Future<void> _pickLocalModel() async {
+    FilePickerResult? result = await FilePicker.platform.pickFiles(
+      type: FileType.any, // GGUF usually doesn't have a standard mime type
+    );
+
+    if (result != null && result.files.single.path != null) {
+      final path = result.files.single.path!;
+      if (path.toLowerCase().endsWith('.gguf')) {
+        setState(() {
+          _localModelPath = path;
+          // Auto-fill name if empty
+          if (_nameController.text == 'New API') {
+            _nameController.text = result.files.single.name;
+          }
+        });
+      } else {
+        if (mounted) {
+           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请选择 .gguf 格式的模型文件')));
+        }
+      }
+    }
   }
 
   Future<void> _testConnection() async {
@@ -144,7 +182,20 @@ class _ApiConnectionEditScreenState extends ConsumerState<ApiConnectionEditScree
   }
 
   void _save() {
-    if (!_formKey.currentState!.validate()) return;
+    if (_selectedPlatform != ApiPlatform.local && !_formKey.currentState!.validate()) return;
+
+    if (_selectedPlatform == ApiPlatform.local && _localModelPath == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请选择本地模型文件')));
+      return;
+    }
+
+    final Map<String, dynamic> params = {};
+    if (_selectedPlatform == ApiPlatform.local) {
+      params['n_threads'] = _nThreads;
+      params['n_batch'] = _nBatch;
+      params['context_size'] = _nContext;
+      params['flash_attn'] = _flashAttn;
+    }
 
     final newConnection = widget.connection?.copyWith(
       name: _nameController.text,
@@ -152,15 +203,25 @@ class _ApiConnectionEditScreenState extends ConsumerState<ApiConnectionEditScree
       baseUrl: _baseUrlController.text,
       apiKey: _apiKeyController.text,
       model: _modelController.text,
+      localModelPath: _localModelPath,
+      parameters: params,
     ) ?? ApiConnection.create(
       name: _nameController.text,
       platform: _selectedPlatform.label,
       baseUrl: _baseUrlController.text,
       apiKey: _apiKeyController.text,
       model: _modelController.text,
+      localModelPath: _localModelPath,
     );
 
-    ref.read(apiConnectionsProvider.notifier).saveConnection(newConnection);
+    if (widget.connection == null) {
+       // Re-create with params since factory doesn't take params
+       final c = newConnection.copyWith(parameters: params);
+       ref.read(apiConnectionsProvider.notifier).saveConnection(c);
+    } else {
+       ref.read(apiConnectionsProvider.notifier).saveConnection(newConnection);
+    }
+    
     Navigator.pop(context);
   }
 
@@ -209,38 +270,117 @@ class _ApiConnectionEditScreenState extends ConsumerState<ApiConnectionEditScree
                 },
               ),
               const SizedBox(height: 16),
-              TextFormField(
-                controller: _baseUrlController,
-                decoration: const InputDecoration(
-                  labelText: 'API 接口地址', 
-                  border: OutlineInputBorder(),
-                  hintText: 'https://api.openai.com/v1'
+
+              if (_selectedPlatform == ApiPlatform.local) ...[
+                 Card(
+                   color: Colors.white10,
+                   child: Padding(
+                     padding: const EdgeInsets.all(12.0),
+                     child: Column(
+                       crossAxisAlignment: CrossAxisAlignment.start,
+                       children: [
+                         const Text('本地模型优化设置', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                         const SizedBox(height: 10),
+                         
+                         // Model Path
+                         const Text('模型路径 (GGUF)', style: TextStyle(color: Colors.grey)),
+                         const SizedBox(height: 4),
+                         Row(
+                           children: [
+                             Expanded(
+                               child: Text(
+                                 _localModelPath ?? '未选择文件',
+                                 style: const TextStyle(color: Colors.white70),
+                                 overflow: TextOverflow.ellipsis,
+                               ),
+                             ),
+                             ElevatedButton(
+                               onPressed: _pickLocalModel,
+                               child: const Text('选择文件'),
+                             ),
+                           ],
+                         ),
+                         const Divider(color: Colors.white24),
+                         
+                         // Threads
+                         Text('CPU 线程数: ${_nThreads.toInt()}', style: const TextStyle(color: Colors.white)),
+                         Slider(
+                           value: _nThreads,
+                           min: 1,
+                           max: 16,
+                           divisions: 15,
+                           label: _nThreads.toInt().toString(),
+                           onChanged: (v) => setState(() => _nThreads = v),
+                         ),
+                         
+                         // Context Size
+                         Text('上下文长度 (Context): ${_nContext.toInt()}', style: const TextStyle(color: Colors.white)),
+                         Slider(
+                           value: _nContext,
+                           min: 512,
+                           max: 8192,
+                           divisions: 15,
+                           label: _nContext.toInt().toString(),
+                           onChanged: (v) => setState(() => _nContext = v),
+                         ),
+                         
+                         // Batch Size
+                         Text('批处理大小 (Batch): ${_nBatch.toInt()}', style: const TextStyle(color: Colors.white)),
+                         Slider(
+                           value: _nBatch,
+                           min: 128,
+                           max: 2048,
+                           divisions: 15,
+                           label: _nBatch.toInt().toString(),
+                           onChanged: (v) => setState(() => _nBatch = v),
+                         ),
+
+                         // Flash Attention
+                         SwitchListTile(
+                           title: const Text('Flash Attention (实验性)', style: TextStyle(color: Colors.white)),
+                           subtitle: const Text('可能提高速度，但部分设备不支持', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                           value: _flashAttn,
+                           onChanged: (v) => setState(() => _flashAttn = v),
+                         ),
+                       ],
+                     ),
+                   ),
+                 ),
+              ] else ...[
+                TextFormField(
+                  controller: _baseUrlController,
+                  decoration: const InputDecoration(
+                    labelText: 'API 接口地址', 
+                    border: OutlineInputBorder(),
+                    hintText: 'https://api.openai.com/v1'
+                  ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _apiKeyController,
-                decoration: const InputDecoration(labelText: 'API 密钥', border: OutlineInputBorder()),
-                obscureText: true,
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _modelController,
-                      decoration: const InputDecoration(labelText: '模型名称', border: OutlineInputBorder()),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _apiKeyController,
+                  decoration: const InputDecoration(labelText: 'API 密钥', border: OutlineInputBorder()),
+                  obscureText: true,
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _modelController,
+                        decoration: const InputDecoration(labelText: '模型名称', border: OutlineInputBorder()),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  ElevatedButton(
-                    onPressed: _isTesting ? null : _testConnection,
-                    child: _isTesting 
-                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) 
-                      : const Text('测试/获取'),
-                  ),
-                ],
-              ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: _isTesting ? null : _testConnection,
+                      child: _isTesting 
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) 
+                        : const Text('测试/获取'),
+                    ),
+                  ],
+                ),
+              ],
+              
               const SizedBox(height: 32),
               ElevatedButton(
                 onPressed: _save,

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_animate/flutter_animate.dart'; // Import flutter_animate
 import 'dart:io';
 import 'dart:ui';
 import '../../data/chat_provider.dart';
@@ -7,10 +8,14 @@ import '../../data/session_provider.dart';
 import '../../data/session_manager.dart'; // Import SessionManager
 import '../../data/tts_service.dart';
 import '../../data/speech_provider.dart';
+import '../../domain/models/session.dart'; // Import Session
 import '../widgets/session_list_drawer.dart';
 import '../../../settings/presentation/widgets/character_settings_drawer.dart';
 import '../widgets/chat_bubble.dart';
+import 'voice_call_screen.dart';
+import 'group_manager_screen.dart'; // Import GroupManagerScreen
 import '../../../character/data/character_provider.dart';
+import '../../../character/domain/models/character.dart'; // Import Character
 import '../../../settings/data/theme_provider.dart';
 import '../../../user/data/persona_provider.dart';
 
@@ -37,6 +42,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
+  void _sendQuietPrompt() {
+    final text = _textController.text.trim();
+    if (text.isEmpty) {
+      _textController.text = '旁白：';
+      _textController.selection = TextSelection.fromPosition(
+        TextPosition(offset: _textController.text.length),
+      );
+      return;
+    }
+
+    final sessionId = ref.read(activeSessionIdProvider);
+    if (sessionId != null) {
+      ref.read(chatSessionProvider(sessionId).notifier).generateQuietPrompt(text);
+      _textController.clear();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     // Initialize SessionManager
@@ -47,6 +69,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final themeSettings = ref.watch(themeSettingsProvider);
     final currentPersona = ref.watch(personaProvider);
     final isTtsPlaying = ref.watch(ttsProvider);
+    final characters = ref.watch(characterListProvider);
+    final sessions = ref.watch(sessionProvider);
+
+    Session? activeSession;
+    if (sessionId != null) {
+      try {
+        activeSession = sessions.firstWhere((s) => s.id == sessionId);
+      } catch (_) {}
+    }
 
     if (sessionId == null && activeCharacter == null) {
        // If both are null, it's likely initial load or no data. 
@@ -58,28 +89,47 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     
     return Scaffold(
       key: _scaffoldKey,
+      backgroundColor: themeSettings.chatBackgroundColor,
       extendBodyBehindAppBar: themeSettings.backgroundImagePath != null,
       appBar: AppBar(
-        backgroundColor: themeSettings.backgroundImagePath != null ? Colors.black.withOpacity(0.5) : null,
+        backgroundColor: themeSettings.backgroundImagePath != null 
+            ? Colors.black.withOpacity(0.5) 
+            : themeSettings.uiBackgroundColor,
         elevation: themeSettings.backgroundImagePath != null ? 0 : 4,
         title: Row(
           children: [
-            CircleAvatar(
-              backgroundImage: (activeCharacter?.avatarPath != null && activeCharacter!.avatarPath.isNotEmpty)
-                  ? FileImage(File(activeCharacter.avatarPath)) as ImageProvider
-                  : const NetworkImage('https://via.placeholder.com/150'),
-              radius: 16,
-            ),
+            if (activeSession?.isGroup == true)
+              const Padding(
+                padding: EdgeInsets.only(right: 8.0),
+                child: Icon(Icons.groups, size: 28),
+              )
+            else
+              CircleAvatar(
+                backgroundImage: (activeCharacter?.avatarPath != null && activeCharacter!.avatarPath.isNotEmpty)
+                    ? FileImage(File(activeCharacter.avatarPath)) as ImageProvider
+                    : const NetworkImage('https://via.placeholder.com/150'),
+                radius: 16,
+              ),
             const SizedBox(width: 10),
             Flexible(
               child: Text(
-                activeCharacter?.name ?? "未选择角色",
+                activeSession?.isGroup == true 
+                    ? (activeSession?.name ?? "群聊") 
+                    : (activeCharacter?.name ?? "未选择角色"),
                 overflow: TextOverflow.ellipsis,
               ),
             ),
           ],
         ),
         actions: [
+          if (activeSession?.isGroup == true)
+            IconButton(
+              icon: const Icon(Icons.edit_note),
+              tooltip: '管理群聊',
+              onPressed: () {
+                Navigator.push(context, MaterialPageRoute(builder: (_) => GroupManagerScreen(session: activeSession)));
+              },
+            ),
           if (isTtsPlaying)
              IconButton(
                icon: const Icon(Icons.stop_circle_outlined, color: Colors.redAccent),
@@ -89,9 +139,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                tooltip: '停止朗读',
              ),
           IconButton(
-            icon: const Icon(Icons.token),
-            onPressed: () {},
-            tooltip: 'Token 统计',
+            icon: const Icon(Icons.call),
+            onPressed: () {
+               Navigator.of(context).push(
+                 MaterialPageRoute(builder: (context) => const VoiceCallScreen()),
+               );
+            },
+            tooltip: '语音通话',
+          ),
+          Consumer(
+            builder: (context, ref, child) {
+              final isStream = ref.watch(isStreamEnabledProvider);
+              return IconButton(
+                icon: Icon(isStream ? Icons.bolt : Icons.hourglass_empty),
+                color: isStream ? Colors.yellowAccent : Colors.white70,
+                onPressed: () {
+                  ref.read(isStreamEnabledProvider.notifier).state = !isStream;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(isStream ? '已切换至: 非流式模式' : '已切换至: 流式模式 (Streaming)')),
+                  );
+                },
+                tooltip: isStream ? '流式生成 (开启)' : '流式生成 (关闭)',
+              );
+            },
           ),
           IconButton(
             icon: const Icon(Icons.settings),
@@ -129,6 +199,79 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ),
             ),
 
+          // Dynamic Style Layer (Sentiment / Expression)
+          Consumer(
+            builder: (context, ref, _) {
+               final styles = ref.watch(activeRenderStylesProvider);
+               final expression = styles['expression'];
+               
+               if (expression == null) return const SizedBox.shrink();
+               
+               Color? tintColor;
+               IconData? feedbackIcon;
+               
+               switch (expression) {
+                 case 'anger': 
+                   tintColor = Colors.red.withOpacity(0.2);
+                   feedbackIcon = Icons.local_fire_department;
+                   break;
+                 case 'sadness': 
+                   tintColor = Colors.blue.withOpacity(0.2);
+                   feedbackIcon = Icons.water_drop;
+                   break;
+                 case 'joy': 
+                   tintColor = Colors.yellow.withOpacity(0.15);
+                   feedbackIcon = Icons.sentiment_satisfied_alt;
+                   break;
+                 case 'fear': 
+                   tintColor = Colors.purple.withOpacity(0.2);
+                   feedbackIcon = Icons.visibility;
+                   break;
+                 case 'shyness': 
+                   tintColor = Colors.pink.withOpacity(0.15);
+                   feedbackIcon = Icons.favorite;
+                   break;
+                 case 'surprise': 
+                   tintColor = Colors.orange.withOpacity(0.15);
+                   feedbackIcon = Icons.bolt;
+                   break;
+               }
+               
+               if (tintColor == null) return const SizedBox.shrink();
+               
+               return Positioned.fill(
+                 child: IgnorePointer( // Don't block interactions
+                   child: AnimatedContainer(
+                     duration: const Duration(milliseconds: 800),
+                     decoration: BoxDecoration(
+                        gradient: RadialGradient(
+                          center: Alignment.center,
+                          radius: 1.5,
+                          colors: [
+                            Colors.transparent,
+                            tintColor,
+                          ],
+                          stops: const [0.5, 1.0],
+                        ),
+                     ),
+                     child: feedbackIcon != null ? Stack(
+                        children: [
+                           Positioned(
+                             bottom: 20,
+                             right: 20,
+                             child: Icon(feedbackIcon, size: 80, color: tintColor.withOpacity(0.5))
+                                .animate(onPlay: (c) => c.repeat(reverse: true))
+                                .scale(begin: const Offset(1,1), end: const Offset(1.1, 1.1), duration: 2.seconds)
+                                .fade(begin: 0.3, end: 0.6),
+                           )
+                        ],
+                     ) : null,
+                   ),
+                 ),
+               );
+            },
+          ),
+
           // Chat Content
           if (sessionId == null)
             Center(
@@ -164,6 +307,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     controller: _scrollController,
                     padding: const EdgeInsets.all(16),
                     reverse: true, // List starts from bottom
+                    keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                     itemCount: messages.length,
                     itemBuilder: (context, index) {
                       // In reverse mode, index 0 is at the bottom.
@@ -171,13 +315,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       final realIndex = messages.length - 1 - index;
                       final msg = messages[realIndex];
                       
+                      Character? msgCharacter;
+                      if (msg.role == 'assistant' && msg.metadata != null && msg.metadata!['characterId'] != null) {
+                         try {
+                           msgCharacter = characters.firstWhere((c) => c.id == msg.metadata!['characterId']);
+                         } catch (_) {}
+                      }
+
+                      final displayAiName = msgCharacter?.name ?? activeCharacter?.name ?? '助手';
+                      final displayAiAvatar = msgCharacter?.avatarPath ?? activeCharacter?.avatarPath;
+                      final isLastMessage = realIndex == messages.length - 1;
+
                       return ChatBubble(
                         content: msg.content,
                         isUser: msg.role == 'user',
-                        name: msg.role == 'user' ? (currentPersona?.name ?? 'User') : (activeCharacter?.name ?? '助手'),
-                        avatarPath: msg.role == 'user' ? (currentPersona?.avatarPath) : activeCharacter?.avatarPath,
+                        name: msg.role == 'user' ? (currentPersona?.name ?? 'User') : displayAiName,
+                        avatarPath: msg.role == 'user' ? (currentPersona?.avatarPath) : displayAiAvatar,
                         swipeIndex: msg.currentIndex,
                         swipeCount: msg.swipes.length,
+                        metadata: msg.metadata, // Pass metadata
+                        isGenerating: isLastMessage && ref.watch(isGeneratingProviderFamily(sessionId)),
                         onSwipe: (newIndex) {
                           ref.read(chatSessionProvider(sessionId).notifier).swipeMessage(realIndex, newIndex);
                         },
@@ -198,11 +355,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     },
                   ),
                 ),
-                if (isLoading)
-                  const Padding(
-                    padding: EdgeInsets.all(8.0),
-                    child: LinearProgressIndicator(),
-                  ),
+                // Removed LinearProgressIndicator to use bubble typing indicator
                 _buildInputArea(sessionId),
               ],
             ),
@@ -214,10 +367,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Widget _buildInputArea(String sessionId) {
     final isListening = ref.watch(isListeningProvider);
     final isGenerating = ref.watch(isGeneratingProviderFamily(sessionId));
+    final themeSettings = ref.watch(themeSettingsProvider);
 
     return Container(
       padding: const EdgeInsets.all(8),
-      color: const Color(0xFF1a1b26),
+      decoration: BoxDecoration(
+        color: themeSettings.uiBackgroundColor,
+        border: Border(
+          top: BorderSide(color: themeSettings.uiBorderColor, width: 1),
+        ),
+      ),
       child: Column(
         children: [
           // Quick Actions
@@ -246,11 +405,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 }),
                 _buildQuickAction(Icons.person, '扮演', () {
                   // Pre-fill input with user name or specific instruction
-                  _textController.text = "*actions*"; 
+                  ref.read(chatSessionProvider(sessionId).notifier).generateImpersonationReply();
                 }),
                 _buildQuickAction(Icons.comment, '旁白', () {
                   // Pre-fill input for impersonation
-                  _textController.text = "System: "; 
+                  _sendQuietPrompt();
                 }),
               ],
             ),
