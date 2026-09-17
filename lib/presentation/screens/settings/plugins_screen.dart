@@ -67,6 +67,15 @@ class PluginsScreen extends ConsumerWidget {
             Icons.hub,
           ),
           const Divider(),
+          _buildPluginTile(
+            context,
+            '前端卡调试面板',
+            '在聊天中显示角色卡的原始 HTML、渲染高度与错误日志。',
+            plugins['frontend_card_debug_panel'] ?? false,
+            (val) => notifier.toggle('frontend_card_debug_panel'),
+            Icons.bug_report,
+          ),
+          const Divider(),
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Text(

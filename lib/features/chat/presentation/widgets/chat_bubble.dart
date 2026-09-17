@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:markdown/markdown.dart' as md;
@@ -8,6 +9,7 @@ import 'package:flutter_highlighter/flutter_highlighter.dart';
 import 'package:flutter_highlighter/themes/atom-one-dark.dart';
 import 'package:flutter_animate/flutter_animate.dart'; // For typing animation
 import 'package:webview_flutter/webview_flutter.dart';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -135,6 +137,8 @@ class ChatBubble extends ConsumerWidget {
                       contentSegments,
                       syntaxes,
                       themeSettings,
+                      isGenerating,
+                      settings['frontend_card_debug_panel'] == true,
                     ),
                 ],
               ),
@@ -146,7 +150,8 @@ class ChatBubble extends ConsumerWidget {
   }
 
   Widget _buildRichMessageContent(List<_ContentSegment> segments,
-      List<md.InlineSyntax> syntaxes, ThemeSettings themeSettings) {
+      List<md.InlineSyntax> syntaxes, ThemeSettings themeSettings,
+      bool isGenerating, bool showCardDebug) {
     if (segments.length == 1 &&
         segments.first.type == _ContentSegmentType.text) {
       return _buildMarkdownBlock(segments.first.value, syntaxes, themeSettings);
@@ -181,9 +186,16 @@ class ChatBubble extends ConsumerWidget {
           if (entry.value.type == _ContentSegmentType.card)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
-              child: FrontendCardWebView(
+              child: FrontendCardWithDebug(
                 html: entry.value.value,
+                rawHtml: entry.value.rawSource,
                 enableJavaScript: entry.value.enableJavaScript,
+                isGenerating: isGenerating,
+                showDebugPanel: showCardDebug,
+                cardIndex: entry.key + 1,
+                totalCards: segments
+                    .where((s) => s.type == _ContentSegmentType.card)
+                    .length,
               ),
             )
           else if (entry.value.value.trim().isNotEmpty)
@@ -321,15 +333,11 @@ class ChatBubble extends ConsumerWidget {
             _prepareFrontendCardPayload(htmlContent, language);
         final enableJavaScript =
             _shouldEnableJavaScript(language, preparedPayload, config);
-        final wrapped = _wrapFrontendCardHtml(preparedPayload);
         segments.add(
           _ContentSegment.card(
-            enableJavaScript
-                ? wrapped
-                : _wrapFrontendCardHtml(
-                    _stripExecutableScripts(preparedPayload),
-                  ),
+            _buildCardPayload(preparedPayload, enableJavaScript),
             enableJavaScript: enableJavaScript,
+            rawSource: preparedPayload,
           ),
         );
       } else {
@@ -345,7 +353,73 @@ class ChatBubble extends ConsumerWidget {
     if (segments.isEmpty) {
       return _extractEmbeddedHtmlSegments(raw, config);
     }
-    return _mergeAdjacentTextSegments(segments);
+    return _mergeAdjacentCardSegments(_mergeAdjacentTextSegments(segments));
+  }
+
+  String _buildCardPayload(String preparedPayload, bool enableJavaScript) {
+    final payload = enableJavaScript
+        ? preparedPayload
+        : _stripExecutableScripts(preparedPayload);
+    return _wrapFrontendCardHtml(payload);
+  }
+
+  // A card's markup and the script that populates it are usually written as
+  // separate blocks in the same message. Rendering each block in its own
+  // WebView leaves the script without its target element, so adjacent card
+  // blocks (even when only whitespace separates them) are merged into a
+  // single document.
+  List<_ContentSegment> _mergeAdjacentCardSegments(
+      List<_ContentSegment> segments) {
+    if (segments.length < 2) {
+      return segments;
+    }
+
+    final merged = <_ContentSegment>[];
+    var pendingWhitespace = '';
+
+    for (final segment in segments) {
+      if (segment.type == _ContentSegmentType.card) {
+        if (merged.isNotEmpty && merged.last.type == _ContentSegmentType.card) {
+          final previous = merged.removeLast();
+          final separator =
+              pendingWhitespace.isEmpty ? '\n' : pendingWhitespace;
+          final combined = '${previous.rawSource}$separator${segment.rawSource}';
+          final enableJavaScript =
+              previous.enableJavaScript || segment.enableJavaScript;
+          merged.add(
+            _ContentSegment.card(
+              _buildCardPayload(combined, enableJavaScript),
+              enableJavaScript: enableJavaScript,
+              rawSource: combined,
+            ),
+          );
+        } else {
+          if (pendingWhitespace.isNotEmpty) {
+            merged.add(_ContentSegment.text(pendingWhitespace));
+          }
+          merged.add(segment);
+        }
+        pendingWhitespace = '';
+        continue;
+      }
+
+      if (segment.value.trim().isEmpty) {
+        pendingWhitespace += segment.value;
+        continue;
+      }
+
+      if (pendingWhitespace.isNotEmpty) {
+        merged.add(_ContentSegment.text(pendingWhitespace));
+        pendingWhitespace = '';
+      }
+      merged.add(segment);
+    }
+
+    if (pendingWhitespace.isNotEmpty && merged.isNotEmpty) {
+      merged.add(_ContentSegment.text(pendingWhitespace));
+    }
+
+    return merged;
   }
 
   void _appendTextSegments(
@@ -415,20 +489,17 @@ class ChatBubble extends ConsumerWidget {
           _shouldEnableJavaScript('', preparedPayload, config);
       segments.add(
         _ContentSegment.card(
-          enableJavaScript
-              ? _wrapFrontendCardHtml(preparedPayload)
-              : _wrapFrontendCardHtml(
-                  _stripExecutableScripts(preparedPayload),
-                ),
+          _buildCardPayload(preparedPayload, enableJavaScript),
           enableJavaScript: enableJavaScript,
+          rawSource: preparedPayload,
         ),
       );
       cursor = capture.end;
     }
 
-    return _mergeAdjacentTextSegments(
+    return _mergeAdjacentCardSegments(_mergeAdjacentTextSegments(
       segments.isEmpty ? [_ContentSegment.text(raw)] : segments,
-    );
+    ));
   }
 
   Match? _firstMatchFrom(RegExp pattern, String input, int start) {
@@ -522,8 +593,9 @@ class ChatBubble extends ConsumerWidget {
     };
 
     if (_isJavaScriptFence(language)) {
-      return config.javaScriptMode != _FrontendJavaScriptMode.disabled &&
-          config.javaScriptMode != _FrontendJavaScriptMode.script;
+      // A js-fenced block is a card by intent in every mode but "disabled";
+      // _shouldEnableJavaScript decides whether its scripts actually run.
+      return config.javaScriptMode != _FrontendJavaScriptMode.disabled;
     }
 
     final hasHtmlDocument = _hasHtmlDocument(content);
@@ -593,8 +665,9 @@ $trimmed
     }
 
     if (_isJavaScriptFence(language)) {
-      return config.javaScriptMode == _FrontendJavaScriptMode.auto ||
-          config.javaScriptMode == _FrontendJavaScriptMode.codeBlock;
+      // The fence already declares the block as JavaScript, so run it in every
+      // mode except an explicit opt-out.
+      return true;
     }
 
     switch (config.javaScriptMode) {
@@ -673,6 +746,10 @@ $trimmed
     padding: 0 !important;
     background: transparent !important;
     -webkit-text-size-adjust: 100% !important;
+    overflow-x: hidden !important;
+  }
+  body {
+    min-height: 200px;
   }
   img, video, canvas, svg {
     max-width: 100% !important;
@@ -749,7 +826,7 @@ $trimmed
 
     function postHeight() {
       try {
-        var height = Math.max(measureHeight(), 120);
+        var height = Math.max(measureHeight(), 200);
         if (lastPostedHeight > 0 && Math.abs(height - lastPostedHeight) <= 1) {
           return;
         }
@@ -778,6 +855,56 @@ $trimmed
         window.FlutterCardLog.postMessage('[triggerSlash] ' + String(text));
       }
     };
+
+    // Minimal SillyTavern surface so cards written against the desktop
+    // extension API fail loudly in the log instead of throwing during load.
+    if (!window.SillyTavern) {
+      window.SillyTavern = {};
+    }
+    if (typeof window.SillyTavern.getContext !== 'function') {
+      window.SillyTavern.getContext = function () {
+        return {
+          name: 'SillyTavern',
+          chatId: 'flutter-host',
+          characters: [],
+          chat: [],
+          chatMetadata: {},
+          extensionSettings: {},
+          powerUserSettings: {},
+          variables: {},
+          getRequestHeaders: function () { return {}; },
+          saveSettingsDebounced: function () {},
+          saveMetadata: function () {},
+          eventSource: {},
+          eventTypes: {},
+          substituteParams: function (value) { return value; },
+          renderExtensionTemplateAsync: function () {
+            return Promise.resolve('');
+          }
+        };
+      };
+    }
+
+    if (!window.TavernHelper) {
+      window.TavernHelper = {
+        getVariables: function () { return {}; },
+        replaceVariables: function (value) { return value; },
+        setVariables: function (variables, options) {
+          pushLog('[TavernHelper.setVariables] ' + JSON.stringify(variables));
+          return Promise.resolve();
+        },
+        insertOrAssignVariables: function (variables) {
+          pushLog(
+            '[TavernHelper.insertOrAssignVariables] ' + JSON.stringify(variables)
+          );
+          return Promise.resolve();
+        },
+        triggerSlash: window.triggerSlash,
+        getLastMessageId: function () { return -1; },
+        getChatMessages: function () { return []; },
+        formatAsTavernRegexedString: function (value) { return value; }
+      };
+    }
 
     window.addEventListener('error', function (event) {
       pushLog('[window.error] ' + (event && event.message ? event.message : 'unknown'));
@@ -1798,11 +1925,13 @@ class _ContentSegment {
   final _ContentSegmentType type;
   final String value;
   final bool enableJavaScript;
+  final String rawSource;
 
   const _ContentSegment._(
     this.type,
     this.value, {
     this.enableJavaScript = false,
+    this.rawSource = '',
   });
 
   factory _ContentSegment.text(String value) =>
@@ -1810,11 +1939,13 @@ class _ContentSegment {
   factory _ContentSegment.card(
     String value, {
     bool enableJavaScript = false,
+    String rawSource = '',
   }) =>
       _ContentSegment._(
         _ContentSegmentType.card,
         value,
         enableJavaScript: enableJavaScript,
+        rawSource: rawSource,
       );
 }
 
@@ -1857,6 +1988,8 @@ class FrontendCardWithDebug extends StatefulWidget {
   final bool showDebugPanel;
   final int cardIndex;
   final int totalCards;
+  final bool enableJavaScript;
+  final bool isGenerating;
 
   const FrontendCardWithDebug({
     super.key,
@@ -1865,6 +1998,8 @@ class FrontendCardWithDebug extends StatefulWidget {
     required this.showDebugPanel,
     required this.cardIndex,
     required this.totalCards,
+    this.enableJavaScript = true,
+    this.isGenerating = false,
   });
 
   @override
@@ -1873,6 +2008,7 @@ class FrontendCardWithDebug extends StatefulWidget {
 
 class _FrontendCardWithDebugState extends State<FrontendCardWithDebug> {
   List<String> _logs = const [];
+  double? _reportedHeight;
 
   @override
   Widget build(BuildContext context) {
@@ -1881,6 +2017,16 @@ class _FrontendCardWithDebugState extends State<FrontendCardWithDebug> {
       children: [
         FrontendCardWebView(
           html: widget.html,
+          enableJavaScript: widget.enableJavaScript,
+          isGenerating: widget.isGenerating,
+          onHeightChanged: (height) {
+            if (!mounted || _reportedHeight == height) {
+              return;
+            }
+            setState(() {
+              _reportedHeight = height;
+            });
+          },
           onDebugLogs: (logs) {
             if (!mounted) {
               return;
@@ -1914,6 +2060,47 @@ class _FrontendCardWithDebugState extends State<FrontendCardWithDebug> {
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
                   ),
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Text(
+                      'WebView 高度: '
+                      '${_reportedHeight == null ? "未知" : "${_reportedHeight!.toStringAsFixed(0)}px"}',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 10,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      widget.enableJavaScript ? 'JS: 已执行' : 'JS: 被剥离',
+                      style: TextStyle(
+                        color: widget.enableJavaScript
+                            ? Colors.lightGreenAccent
+                            : Colors.orangeAccent,
+                        fontSize: 10,
+                      ),
+                    ),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () {
+                        Clipboard.setData(
+                          ClipboardData(text: widget.rawHtml),
+                        );
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('已复制原始 HTML'),
+                            duration: Duration(seconds: 1),
+                          ),
+                        );
+                      },
+                      child: const Text(
+                        '复制',
+                        style: TextStyle(fontSize: 11),
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 6),
                 SelectableText(
@@ -1964,13 +2151,17 @@ class _FrontendCardWithDebugState extends State<FrontendCardWithDebug> {
 class FrontendCardWebView extends StatefulWidget {
   final String html;
   final bool enableJavaScript;
+  final bool isGenerating;
   final ValueChanged<List<String>>? onDebugLogs;
+  final ValueChanged<double>? onHeightChanged;
 
   const FrontendCardWebView({
     super.key,
     required this.html,
     this.enableJavaScript = true,
+    this.isGenerating = false,
     this.onDebugLogs,
+    this.onHeightChanged,
   });
 
   @override
@@ -1978,10 +2169,14 @@ class FrontendCardWebView extends StatefulWidget {
 }
 
 class _FrontendCardWebViewState extends State<FrontendCardWebView> {
+  static const String _baseUrl = 'about:blank';
+
   late final WebViewController _controller;
   double _height = 260;
   bool _ready = false;
+  String? _loadedHtml;
   final List<String> _logs = [];
+  Timer? _reloadDebounce;
   final Set<Factory<OneSequenceGestureRecognizer>> _gestureRecognizers = {
     Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
   };
@@ -1998,6 +2193,24 @@ class _FrontendCardWebViewState extends State<FrontendCardWebView> {
     widget.onDebugLogs?.call(List<String>.unmodifiable(_logs));
   }
 
+  void _setHeight(double next) {
+    final clamped = next.clamp(_minCardHeight, 2400).toDouble();
+    if ((clamped - _height).abs() <= 1) {
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _height = clamped;
+      });
+    }
+    widget.onHeightChanged?.call(clamped);
+  }
+
+  void _load() {
+    _loadedHtml = widget.html;
+    _controller.loadHtmlString(widget.html, baseUrl: _baseUrl);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -2011,15 +2224,7 @@ class _FrontendCardWebViewState extends State<FrontendCardWebView> {
           if (parsed == null || parsed <= 0 || !mounted) {
             return;
           }
-
-          final next = parsed.clamp(120, 2400).toDouble();
-          if ((next - _height).abs() <= 1) {
-            return;
-          }
-
-          setState(() {
-            _height = next;
-          });
+          _setHeight(parsed);
         },
       )
       ..addJavaScriptChannel(
@@ -2052,22 +2257,55 @@ class _FrontendCardWebViewState extends State<FrontendCardWebView> {
             await _syncDebugErrors();
           },
         ),
-      )
-      ..loadHtmlString(widget.html, baseUrl: 'https://rp-hub.local/');
+      );
+    _load();
   }
 
   @override
   void didUpdateWidget(covariant FrontendCardWebView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.html != widget.html) {
-      _logs.clear();
-      widget.onDebugLogs?.call(const []);
-      setState(() {
-        _ready = false;
-        _height = 260;
-      });
-      _controller.loadHtmlString(widget.html, baseUrl: 'https://rp-hub.local/');
+
+    final htmlChanged = oldWidget.html != widget.html;
+    final generationEnded = oldWidget.isGenerating && !widget.isGenerating;
+    if (!htmlChanged && !generationEnded) {
+      return;
     }
+    if (widget.html == _loadedHtml) {
+      return;
+    }
+
+    // During streaming the html changes on every token; reloading on each one
+    // means the document never finishes loading, so the card stays blank until
+    // generation stops.
+    if (widget.isGenerating) {
+      _reloadDebounce?.cancel();
+      _reloadDebounce = Timer(const Duration(milliseconds: 600), () {
+        if (mounted && !widget.isGenerating) {
+          _applyReload();
+        }
+      });
+      return;
+    }
+
+    _reloadDebounce?.cancel();
+    _reloadDebounce = null;
+    _applyReload();
+  }
+
+  void _applyReload() {
+    _logs.clear();
+    widget.onDebugLogs?.call(const []);
+    setState(() {
+      _ready = false;
+      _height = 260;
+    });
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _reloadDebounce?.cancel();
+    super.dispose();
   }
 
   Future<void> _syncHeight() async {
@@ -2111,12 +2349,7 @@ class _FrontendCardWebViewState extends State<FrontendCardWebView> {
         raw.toString().replaceAll('"', '').trim(),
       );
       if (parsed != null && parsed > 0) {
-        final next = parsed.clamp(120, 2400).toDouble();
-        if (mounted && (next - _height).abs() > 1) {
-          setState(() {
-            _height = next;
-          });
-        }
+        _setHeight(parsed);
       } else {
         _pushLog('[height_parse_failed] raw=$raw');
       }
@@ -2154,7 +2387,7 @@ class _FrontendCardWebViewState extends State<FrontendCardWebView> {
 
   @override
   Widget build(BuildContext context) {
-    final minHeight = math.max(_height, 120).toDouble();
+    final minHeight = math.max(_height, _minCardHeight).toDouble();
     return AnimatedContainer(
       duration: const Duration(milliseconds: 180),
       width: double.infinity,
@@ -2395,6 +2628,8 @@ final RegExp _htmlFragmentStartPattern = RegExp(
   r'<(?:div|section|article|aside|header|footer|table|svg|canvas|details|form|iframe|style|script)\b',
   caseSensitive: false,
 );
+
+const double _minCardHeight = 200;
 
 class _HtmlFragmentCapture {
   final String html;
