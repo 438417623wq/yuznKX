@@ -18,6 +18,7 @@ import 'chat_service.dart';
 import 'local_llm_service.dart';
 import 'rp_hub_context_builder.dart';
 import 'session_provider.dart';
+import 'transport/chat_transport.dart';
 import 'world_info_runtime.dart';
 
 import 'dart:async';
@@ -45,6 +46,12 @@ final chatLoadingProviderFamily =
 final isGeneratingProviderFamily =
     StateProvider.family<bool, String>((ref, sessionId) => false);
 
+/// 世界书 Token 预算溢出提示。
+///
+/// 只有在「全局世界信息/知识书激活设置」里打开「溢出警报」时才会被赋值；
+/// 聊天页 `ref.listen` 到之后弹一次 SnackBar，然后立刻清空。
+final worldInfoOverflowNoticeProvider = StateProvider<String?>((ref) => null);
+
 enum _GenerationType {
   normal,
   continueMode,
@@ -64,12 +71,15 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
   final String sessionId;
   static const int _defaultMaxContextTokens = 4096;
   static const int _defaultResponseReserve = 320;
-  StreamSubscription<String>? _generationSubscription;
+  StreamSubscription<ChatStreamEvent>? _generationSubscription;
   int _generationSerial = 0;
   int? _activeGenerationId;
   Completer<void>? _generationCompleter;
   CancelToken? _generationCancelToken;
   DateTime? _rateLimitBlockUntil;
+
+  /// 最近一次世界书扫描是否因 Token 预算溢出而丢弃了条目。
+  bool _lastWorldInfoOverflowed = false;
 
   ChatNotifier(this._ref, this.sessionId) : super([]) {
     _loadSession();
@@ -691,27 +701,58 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       );
 
       final preset = activePreset;
-      final params = <String, dynamic>{};
+      final presetParams = <String, dynamic>{};
       if (preset != null) {
-        params['temperature'] = preset.temperature.clamp(0.0, 2.0);
-        params['frequency_penalty'] = preset.frequencyPenalty.clamp(-2.0, 2.0);
-        params['presence_penalty'] = preset.presencePenalty.clamp(-2.0, 2.0);
-        params['top_p'] = preset.topP.clamp(0.0, 1.0);
+        presetParams['temperature'] = preset.temperature.clamp(0.0, 2.0);
+        presetParams['frequency_penalty'] =
+            preset.frequencyPenalty.clamp(-2.0, 2.0);
+        presetParams['presence_penalty'] =
+            preset.presencePenalty.clamp(-2.0, 2.0);
+        presetParams['top_p'] = preset.topP.clamp(0.0, 1.0);
 
-        final safeMaxTokens = preset.maxTokens.clamp(1, 131072);
-        params['max_tokens'] = safeMaxTokens;
+        // max_tokens 必须与上下文预算里预留的空间一致，否则请求可能直接超窗。
+        final safeMaxTokens = constructedPrompt.responseReserveTokens > 0
+            ? constructedPrompt.responseReserveTokens
+            : preset.maxTokens;
+        presetParams['max_tokens'] = safeMaxTokens.clamp(1, 131072);
+
         if (preset.topK > 0) {
-          params['top_k'] = preset.topK.clamp(1, 1000);
+          presetParams['top_k'] = preset.topK.clamp(1, 1000);
         }
         if (preset.repetitionPenalty != 1.0) {
-          params['repetition_penalty'] =
+          presetParams['repetition_penalty'] =
               preset.repetitionPenalty.clamp(0.5, 2.0);
         }
+
+        // 停止序列必须先过一遍宏替换：酒馆会把 `{{user}}` / `{{char}}`
+        // 换成实际名字再下发，否则 `\n{{user}}:` 这类停止串永远匹配不上。
+        // 同时过滤掉长度 ≤1 的项 —— 单个字符（换行、句号、空格）会让生成
+        // 刚开始就被截断，这是「AI 吐字很少」最常见的元凶。
+        final stops = preset.stopStrings
+            .map((value) => _replaceMacros(value.trim(), character))
+            .where((value) => value.trim().length > 1)
+            .toSet()
+            .toList(growable: false);
+        if (stops.isNotEmpty) {
+          presetParams['stop'] = stops;
+        }
       }
+
+      // 连接级参数（本地模型线程/上下文、chat 模板、include_usage 等）合并进来，
+      // 预设里的采样参数优先级更高。本地专属键由协议适配层过滤，不会外泄给远程 API。
+      final params = <String, dynamic>{
+        ...connection.parameters,
+        ...presetParams,
+      };
+
+      final service = _ref.read(chatServiceProvider);
 
       final metadata = {
         'model': preferredModel ?? connection.model,
         'params': params,
+        'context_size': constructedPrompt.maxContextTokens,
+        'response_reserve': constructedPrompt.responseReserveTokens,
+        'protocol': service.adapterFor(connection).id,
         'prompt': ChatService.serializeMessagesForApi(effectiveMessagesToSend),
         'prompt_preview': _buildPromptPreviewPayload(
           constructedPrompt.assemblyMessages,
@@ -724,6 +765,7 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
           'historyCount': history.length,
           'activeWorldInfoIds': activeWiIds,
           'worldInfoCount': injectedWorldInfoItems.length,
+          'worldInfoOverflowed': _lastWorldInfoOverflowed,
           'worldInfo': injectedWorldInfoItems
               .map((item) => {
                     'uid': item.entry.uid,
@@ -747,7 +789,6 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
         state = newStateWithMeta;
       }
 
-      final service = _ref.read(chatServiceProvider);
       final isStreamEnabled = _ref.read(isStreamEnabledProvider);
 
       if (!_isGenerationActive(generationId)) {
@@ -838,9 +879,16 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       try {
         final memorySettings = _ref.read(memoryPluginSettingsProvider);
         final memoryEnabled = memorySettings.isPluginEnabled;
+        // 记忆是**会话级**的。用户可能在生成期间切换了对话，此时
+        // memoryProvider 已指向另一条会话 —— 若照旧写回，这张表格的内容
+        // 会被串到别的对话里。因此只在「生成时的会话仍是当前活跃会话」时落库。
+        // 注意：下面剥离 <tableEdit> 标签的逻辑不受影响，那是显示层的事。
+        final isSameSession = _ref.read(activeSessionIdProvider) == sessionId;
         _ref.read(memoryProvider.notifier).processCommands(
               finalContent,
-              allowWrites: memoryEnabled && memorySettings.isAiWriteTable,
+              allowWrites: isSameSession &&
+                  memoryEnabled &&
+                  memorySettings.isAiWriteTable,
             );
         if (memoryEnabled) {
           final contentBeforeStrip = finalContent;
@@ -983,14 +1031,28 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
     }
   }
 
-  Future<void> _handleStream(
-      Stream<String> stream, int targetIndex, int generationId) async {
+  Future<void> _handleStream(Stream<ChatStreamEvent> stream, int targetIndex,
+      int generationId) async {
     final completer = Completer<void>();
     _generationCompleter = completer;
     int chunkCount = 0;
+    ChatUsage? usage;
+    String? finishReason;
 
     _generationSubscription = stream.listen(
-      (chunk) {
+      (event) {
+        if (event.usage != null) {
+          usage = usage?.merge(event.usage) ?? event.usage;
+        }
+        if (event.finishReason != null) {
+          finishReason = event.finishReason;
+        }
+
+        final chunk = event.text;
+        if (chunk == null || chunk.isEmpty) {
+          return;
+        }
+
         if (!_isGenerationActive(generationId)) {
           return;
         }
@@ -1023,6 +1085,11 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       },
       onDone: () {
         if (_isGenerationActive(generationId)) {
+          _attachGenerationStats(
+            targetIndex,
+            usage: usage,
+            finishReason: finishReason,
+          );
           _persistMessages();
           _postProcessMessage(targetIndex, sessionId);
         }
@@ -1047,12 +1114,39 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
     await completer.future;
   }
 
-  Future<void> _handleNonStream(
-      Future<String> future, int targetIndex, int generationId) async {
+  /// 把服务端返回的 usage / finish_reason 写进消息 metadata，便于调试与统计。
+  void _attachGenerationStats(
+    int targetIndex, {
+    ChatUsage? usage,
+    String? finishReason,
+  }) {
+    if (usage == null && finishReason == null) {
+      return;
+    }
+    if (targetIndex < 0 || targetIndex >= state.length) {
+      return;
+    }
+
+    final msg = state[targetIndex];
+    final metadata = <String, dynamic>{...?msg.metadata};
+    if (usage != null) {
+      metadata['usage'] = usage.toJson();
+    }
+    if (finishReason != null) {
+      metadata['finish_reason'] = finishReason;
+    }
+
+    final newState = List<ChatMessage>.from(state);
+    newState[targetIndex] = msg.copyWith(metadata: metadata);
+    state = newState;
+  }
+
+  Future<void> _handleNonStream(Future<ChatCompletionResult> future,
+      int targetIndex, int generationId) async {
     final completer = Completer<void>();
     _generationCompleter = completer;
 
-    future.then((content) async {
+    future.then((result) async {
       if (!_isGenerationActive(generationId)) {
         if (!completer.isCompleted) {
           completer.complete();
@@ -1066,6 +1160,7 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
         return;
       }
 
+      final content = result.text;
       _analyzeSentiment(content);
 
       final currentMsg = state[targetIndex];
@@ -1082,6 +1177,12 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       final newState = List<ChatMessage>.from(state);
       newState[targetIndex] = updatedMsg;
       state = newState;
+
+      _attachGenerationStats(
+        targetIndex,
+        usage: result.usage,
+        finishReason: result.finishReason,
+      );
 
       await _persistMessages();
       _postProcessMessage(targetIndex, sessionId);
@@ -1668,10 +1769,42 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
   }
 
   // --- Token Estimation ---
+  //
+  // 旧的 `text.length / 2.5` 对纯英文明显高估、对纯中文又严重低估，
+  // 导致上下文预算算不准。这里按字符类型加权：
+  //   CJK / 假名 / 谚文  ≈ 0.6 token/字
+  //   拉丁字母与其它      ≈ 1 token / 4 字符
+  //
+  // 系数取 0.6 而不是 0.9：主流中文模型（Qwen / DeepSeek / GLM 等）的
+  // BPE 词表对常用汉字多为 1 字 ≈ 0.5~0.7 token，按 0.9 估算会把预算
+  // 高估约 50%，直接导致历史被过早截断、世界书条目挤不进预算。
   int _estimateTokens(String text) {
-    // Rough estimation: 1 token ~= 4 chars for English, 1 char for CJK
-    // A simple heuristic
-    return (text.length / 2.5).ceil();
+    if (text.isEmpty) {
+      return 0;
+    }
+
+    var cjkCount = 0;
+    var otherCount = 0;
+    for (final rune in text.runes) {
+      if (_isCjkRune(rune)) {
+        cjkCount++;
+      } else {
+        otherCount++;
+      }
+    }
+
+    final estimate = cjkCount * 0.6 + otherCount / 4.0;
+    return estimate <= 0 ? 0 : estimate.ceil();
+  }
+
+  bool _isCjkRune(int rune) {
+    return (rune >= 0x4E00 && rune <= 0x9FFF) || // CJK 统一表意
+        (rune >= 0x3400 && rune <= 0x4DBF) || // CJK 扩展 A
+        (rune >= 0xF900 && rune <= 0xFAFF) || // CJK 兼容表意
+        (rune >= 0x3000 && rune <= 0x303F) || // CJK 标点
+        (rune >= 0xFF00 && rune <= 0xFFEF) || // 全角字符
+        (rune >= 0x3040 && rune <= 0x30FF) || // 平假名 / 片假名
+        (rune >= 0xAC00 && rune <= 0xD7AF); // 谚文
   }
 
   List<_TriggeredWorldInfoEntry> _scanWorldInfo(
@@ -1701,6 +1834,13 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
               return const <WorldInfo>[];
             }
 
+            // 「自身已禁用」只对全局池（global）来源生效。
+            //
+            // 角色卡绑定的世界书（character）与会话级世界书（session）是用
+            // 户显式挂到这张卡 / 这个会话上的，语义上等同于在酒馆里直接选中
+            // 该世界书，不应再被自身开关二次拦截。历史上这里曾收紧为「一律
+            // 遵守 disabled」，导致带 `enabled:false` 的卡内嵌书静默失效、
+            // 用户又找不到任何开关可以恢复 —— 现在恢复旧语义。
             final sourceKind =
                 worldInfoSourceKindById?[normalizedId]?.trim() ?? 'global';
             final isCharacterScoped =
@@ -1725,24 +1865,29 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
         return false;
       }
 
+      // 全局激活设置里的「区分大小写 / 匹配整个单词」是总开关，
+      // 与条目自身的同名开关取「或」：任一为真即按该规则匹配。
+      final effectiveCaseSensitive = caseSensitive || settings.caseSensitive;
+      final effectiveWholeWords = matchWholeWords || settings.matchWholeWords;
+
       final parsedRegex = _tryParseWorldInfoKeyRegex(
         trimmedKey,
-        caseSensitive: caseSensitive,
+        caseSensitive: effectiveCaseSensitive,
       );
       if (useRegex || parsedRegex != null) {
         try {
           return (parsedRegex ??
-                  RegExp(trimmedKey, caseSensitive: caseSensitive))
+                  RegExp(trimmedKey, caseSensitive: effectiveCaseSensitive))
               .hasMatch(source);
         } catch (_) {
           return false;
         }
       }
 
-      if (matchWholeWords) {
+      if (effectiveWholeWords) {
         final normalizedKey =
-            caseSensitive ? trimmedKey : trimmedKey.toLowerCase();
-        final haystack = caseSensitive ? source : sourceLower;
+            effectiveCaseSensitive ? trimmedKey : trimmedKey.toLowerCase();
+        final haystack = effectiveCaseSensitive ? source : sourceLower;
         final startsWithWordChar = RegExp(r'^\w').hasMatch(normalizedKey);
         final endsWithWordChar = RegExp(r'\w$').hasMatch(normalizedKey);
         var pattern = RegExp.escape(normalizedKey);
@@ -1755,28 +1900,30 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
         return RegExp(pattern).hasMatch(haystack);
       }
 
-      if (caseSensitive) {
+      if (effectiveCaseSensitive) {
         return source.contains(trimmedKey);
       }
       return sourceLower.contains(trimmedKey.toLowerCase());
     }
 
-    bool matchesEntry(WorldInfoEntry entry, String source) {
+    /// 返回命中得分：0 表示未命中；>0 为命中的关键词数量，
+    /// 供「使用群组评分」时在同一群组内比较优先级。
+    int scoreEntry(WorldInfoEntry entry, String source) {
       if (entry.constant) {
-        return true;
+        // 常驻条目不依赖关键词，给一个基础分保证能进入候选。
+        return 1;
       }
 
       final sourceLower = source.toLowerCase();
-      bool primaryMatched = false;
+      var score = 0;
       for (final key in entry.keys) {
         if (checkKey(key, entry.caseSensitive, entry.useRegex,
             entry.matchWholeWords, source, sourceLower)) {
-          primaryMatched = true;
-          break;
+          score++;
         }
       }
-      if (!primaryMatched) {
-        return false;
+      if (score == 0) {
+        return 0;
       }
 
       final secondaryKeys = entry.secondaryKeys
@@ -1784,34 +1931,34 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
           .where((key) => key.isNotEmpty)
           .toList(growable: false);
       if (!entry.selective || secondaryKeys.isEmpty) {
-        return true;
+        return score;
       }
 
-      bool secondaryAny = false;
+      var secondaryAny = false;
       var secondaryAll = true;
+      var secondaryScore = 0;
       for (final key in secondaryKeys) {
         final matched = checkKey(key, entry.caseSensitive, entry.useRegex,
             entry.matchWholeWords, source, sourceLower);
         if (matched) {
           secondaryAny = true;
+          secondaryScore++;
         } else {
           secondaryAll = false;
         }
       }
 
-      if (entry.selectiveLogic == 0) {
-        return secondaryAny;
+      final passed = switch (entry.selectiveLogic) {
+        0 => secondaryAny,
+        1 => secondaryAll,
+        2 => !secondaryAny,
+        3 => !secondaryAll,
+        _ => secondaryAny,
+      };
+      if (!passed) {
+        return 0;
       }
-      if (entry.selectiveLogic == 1) {
-        return secondaryAll;
-      }
-      if (entry.selectiveLogic == 2) {
-        return !secondaryAny;
-      }
-      if (entry.selectiveLogic == 3) {
-        return !secondaryAll;
-      }
-      return secondaryAny;
+      return score + secondaryScore;
     }
 
     final triggered = <String, _TriggeredWorldInfoEntry>{};
@@ -1827,6 +1974,7 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
     var usedBudget = 0;
     var depthSkew = 0;
     var loopCount = 0;
+    var recursionSteps = 0;
     var tokenBudgetOverflowed = false;
     var scanState = _WorldInfoScanState.initial;
     final delayedRecursionLevels = <int>{
@@ -1905,7 +2053,8 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
             scanState: scanState,
             settings: settings,
           );
-          if (!matchesEntry(entry, source)) {
+          final score = scoreEntry(entry, source);
+          if (score == 0) {
             continue;
           }
 
@@ -1920,13 +2069,17 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
                       ? worldInfoSourceKindById![wi.id]!
                       : 'global',
               sourceOrder: requestedOrderByWorldInfoId[wi.id] ?? (1 << 20),
+              score: score,
             ),
           );
         }
       }
 
-      final filteredCandidates =
-          _applyWorldInfoGroupSelection(candidates, activationState);
+      final filteredCandidates = _applyWorldInfoGroupSelection(
+        candidates,
+        activationState,
+        useGroupScoring: settings.useGroupScoring,
+      );
       filteredCandidates.sort((a, b) {
         final aEffectState = _resolveWorldInfoEffectState(
           a.entry,
@@ -2037,6 +2190,16 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
         recursionBuffer.addAll(recursionAdds);
       }
 
+      // 最大递归深度：0 表示不限制（仍受循环自身 64 次的上限约束）。
+      if (nextScanState == _WorldInfoScanState.recursion) {
+        if (settings.maxRecursionDepth > 0 &&
+            recursionSteps >= settings.maxRecursionDepth) {
+          nextScanState = _WorldInfoScanState.none;
+        } else {
+          recursionSteps++;
+        }
+      }
+
       if (filteredCandidates.isEmpty &&
           nextScanState == _WorldInfoScanState.none) {
         break;
@@ -2059,6 +2222,14 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
           ),
           settings.characterStrategy,
         ));
+
+    _lastWorldInfoOverflowed = tokenBudgetOverflowed;
+
+    if (tokenBudgetOverflowed && settings.alertOnOverflow) {
+      _ref.read(worldInfoOverflowNoticeProvider.notifier).state =
+          '世界书 Token 预算已溢出，部分条目未能注入。'
+          '可在「全局世界信息/知识书激活设置」里调高「上下文百分比」。';
+    }
 
     return entries;
   }
@@ -2231,8 +2402,9 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
 
   List<_WorldInfoCandidate> _applyWorldInfoGroupSelection(
     List<_WorldInfoCandidate> candidates,
-    _WorldInfoActivationState activationState,
-  ) {
+    _WorldInfoActivationState activationState, {
+    bool useGroupScoring = false,
+  }) {
     final result = <_WorldInfoCandidate>[];
     final grouped = <String, List<_WorldInfoCandidate>>{};
 
@@ -2291,6 +2463,22 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       _WorldInfoCandidate winner;
       if (overrides.isNotEmpty) {
         winner = overrides.first;
+      } else if (useGroupScoring) {
+        // 群组评分：命中关键词更多的条目优先，不再做权重随机。
+        final scored = [...eligible]..sort((a, b) {
+            final scoreCmp = b.score.compareTo(a.score);
+            if (scoreCmp != 0) {
+              return scoreCmp;
+            }
+            final weightCmp = b.entry.groupWeight
+                .clamp(1, 10000)
+                .compareTo(a.entry.groupWeight.clamp(1, 10000));
+            if (weightCmp != 0) {
+              return weightCmp;
+            }
+            return a.entry.uid.compareTo(b.entry.uid);
+          });
+        winner = scored.first;
       } else {
         final totalWeight = eligible.fold<int>(
           0,
@@ -2452,6 +2640,8 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
         _buildWorldInfoBlock(groupedWorldInfo.userTop, character);
     final topSystemPrompt =
         _replaceMacros(_buildTopSystemPrompt(preset), character);
+    final characterSystemPrompt =
+        _replaceMacros(_getCharacterSystemPrompt(character), character);
     final exampleDialogueBlock = _buildRpHubExampleDialogueBlock(character);
     final characterDescription =
         _replaceMacros(_getCharacterDescription(character), character);
@@ -2466,6 +2656,7 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       preset: preset,
       history: const <ChatMessage>[],
       topSystemPrompt: topSystemPrompt,
+      characterSystemPrompt: characterSystemPrompt,
       depthInjections: depthInjections,
       beforeCharacterWorldInfo: beforeCharacterWorldInfo,
       afterCharacterWorldInfo: afterCharacterWorldInfo,
@@ -2505,10 +2696,11 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
     final visibleHistory =
         _collectHistoryWithinBudget(historyForBudget, historyBudget);
 
-    return _assemblePromptMessages(
+    final assembled = _assemblePromptMessages(
       preset: preset,
       history: visibleHistory,
       topSystemPrompt: topSystemPrompt,
+      characterSystemPrompt: characterSystemPrompt,
       depthInjections: depthInjections,
       beforeCharacterWorldInfo: beforeCharacterWorldInfo,
       afterCharacterWorldInfo: afterCharacterWorldInfo,
@@ -2535,12 +2727,19 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       generationType: generationType,
       character: character,
     );
+
+    return _ConstructedPromptResult(
+      assemblyMessages: assembled.assemblyMessages,
+      maxContextTokens: maxContextTokens,
+      responseReserveTokens: responseReserve,
+    );
   }
 
   _ConstructedPromptResult _assemblePromptMessages({
     required Preset? preset,
     required List<ChatMessage> history,
     required String topSystemPrompt,
+    required String characterSystemPrompt,
     required List<RpHubContextDepthInjection> depthInjections,
     required String beforeCharacterWorldInfo,
     required String afterCharacterWorldInfo,
@@ -2566,28 +2765,11 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
     required Character? character,
   }) {
     final now = DateTime.now();
+    // 没有预设（或预设没有 prompt 列表）时，退化为酒馆默认 Prompt Manager 顺序，
+    // 保证角色描述 / 性格 / 场景 / 人设 / 示例对话 / 记忆表 / 历史都能进 prompt。
     final prompts = preset?.prompts.isNotEmpty == true
         ? preset!.prompts
-        : const <PresetPrompt>[
-            PresetPrompt(
-              identifier: 'main',
-              name: 'Main Prompt',
-              role: 'system',
-              content:
-                  'Write {{char}}\'s next reply in a fictional chat between {{charIfNotGroup}} and {{user}}.',
-              enabled: true,
-              systemPrompt: true,
-            ),
-            PresetPrompt(
-              identifier: 'chatHistory',
-              name: 'Chat History',
-              role: 'system',
-              content: '',
-              enabled: true,
-              marker: true,
-              legacyPositioning: false,
-            ),
-          ];
+        : _defaultPromptManagerPrompts();
 
     final plannedEntries = <_PromptPlanEntry>[];
     final attachmentPrompts = <_AssemblyAttachmentPrompt>[];
@@ -2635,6 +2817,19 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
         sourceKey: 'preset_system_prompt',
         sourceLabel: 'Preset System Prompt',
         title: 'System Prompt',
+      );
+    }
+
+    // 角色卡自带的 system_prompt 独立注入，不再冒充 personality。
+    final cardSystemPrompt = characterSystemPrompt.trim();
+    if (cardSystemPrompt.isNotEmpty &&
+        cardSystemPrompt != presetSystemPrompt) {
+      addMessageEntry(
+        role: 'system',
+        content: cardSystemPrompt,
+        sourceKey: 'character_system_prompt',
+        sourceLabel: 'Character System Prompt',
+        title: 'Character System Prompt',
       );
     }
 
@@ -2917,7 +3112,127 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       }
     }
 
+    // 兜底：世界书里位置为「角色前 / 角色后」的条目，只会经由预设的
+    // `worldInfoBefore` / `worldInfoAfter` 槽位进入 prompt。预设若把这两个
+    // 槽位关掉（prompt_order 里 enabled=false），这批世界书会整批静默丢失。
+    // 这里在缺失时统一补一条 system 消息，保证设定一定能送到模型。
+    final enabledIdentifiers = <String>{
+      for (final prompt in prompts)
+        if (prompt.enabled) prompt.identifier,
+    };
+    final missingWorldInfoSegments = <String>[
+      if (!enabledIdentifiers.contains('worldInfoBefore'))
+        beforeCharacterWorldInfo.trim(),
+      if (!enabledIdentifiers.contains('worldInfoAfter'))
+        afterCharacterWorldInfo.trim(),
+    ].where((segment) => segment.isNotEmpty).toList(growable: false);
+
+    if (missingWorldInfoSegments.isNotEmpty) {
+      final fallbackContent = missingWorldInfoSegments.join('\n\n');
+      assembly.insert(
+        0,
+        _PromptAssemblyMessage(
+          message: ChatMessage(
+            role: 'system',
+            content: fallbackContent,
+            timestamp: now,
+          ),
+          sourceKey: 'world_info_fallback',
+          sourceLabel: 'World Info (fallback)',
+          blocks: [
+            _PromptAssemblyBlock(
+              title: 'World Info (Fallback)',
+              content: fallbackContent,
+            ),
+          ],
+        ),
+      );
+    }
+
     return _ConstructedPromptResult(assemblyMessages: assembly);
+  }
+
+  /// 无预设时使用的默认 Prompt Manager 顺序（对齐酒馆默认预设）。
+  ///
+  /// 这些 identifier 由 [_resolvePresetPromptContent] 解析成实际内容，
+  /// 内容为空时会被自动跳过，因此这里只声明顺序与角色。
+  List<PresetPrompt> _defaultPromptManagerPrompts() {
+    return const <PresetPrompt>[
+      PresetPrompt(
+        identifier: 'worldInfoBefore',
+        name: 'World Info (Before)',
+        role: 'system',
+        content: '',
+        enabled: true,
+      ),
+      PresetPrompt(
+        identifier: 'main',
+        name: 'Main Prompt',
+        role: 'system',
+        content:
+            'Write {{char}}\'s next reply in a fictional chat between {{charIfNotGroup}} and {{user}}.',
+        enabled: true,
+        systemPrompt: true,
+      ),
+      PresetPrompt(
+        identifier: 'worldInfoAfter',
+        name: 'World Info (After)',
+        role: 'system',
+        content: '',
+        enabled: true,
+      ),
+      PresetPrompt(
+        identifier: 'charDescription',
+        name: 'Char Description',
+        role: 'system',
+        content: '',
+        enabled: true,
+      ),
+      PresetPrompt(
+        identifier: 'charPersonality',
+        name: 'Char Personality',
+        role: 'system',
+        content: '',
+        enabled: true,
+      ),
+      PresetPrompt(
+        identifier: 'scenario',
+        name: 'Scenario',
+        role: 'system',
+        content: '',
+        enabled: true,
+      ),
+      PresetPrompt(
+        identifier: 'personaDescription',
+        name: 'Persona Description',
+        role: 'system',
+        content: '',
+        enabled: true,
+      ),
+      PresetPrompt(
+        identifier: 'dialogueExamples',
+        name: 'Chat Examples',
+        role: 'system',
+        content: '',
+        enabled: true,
+      ),
+      PresetPrompt(
+        identifier: 'vectorsMemory',
+        name: 'Memory',
+        role: 'system',
+        content: '',
+        enabled: true,
+      ),
+      PresetPrompt(
+        identifier: 'chatHistory',
+        name: 'Chat History',
+        role: 'system',
+        content: '',
+        enabled: true,
+        marker: true,
+        legacyPositioning: false,
+      ),
+    ];
   }
 
   String _resolvePresetPromptContent(
@@ -3350,21 +3665,26 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       return rawPersonality;
     }
 
-    final storedPersonality = character?.personality.trim() ?? '';
-    if (storedPersonality.isNotEmpty) {
-      return storedPersonality;
+    // 只取「性格」语义的字段。system_prompt 属于独立的系统提示词槽位，
+    // 由 _getCharacterSystemPrompt 负责，不能在这里兜底，否则会被重复注入。
+    return character?.personality.trim() ?? '';
+  }
+
+  /// 角色卡自带的系统提示词（chara_card_v2 的 `system_prompt` 字段）。
+  String _getCharacterSystemPrompt(Character? character) {
+    if (character == null) {
+      return '';
     }
 
     final rawSystemPrompt = _readCharacterCardString(
       character,
       const ['system_prompt', 'systemPrompt'],
     );
-    if (rawSystemPrompt.isNotEmpty &&
-        (character?.systemInstruction.trim().isEmpty ?? true)) {
+    if (rawSystemPrompt.isNotEmpty) {
       return rawSystemPrompt;
     }
 
-    return character?.systemInstruction.trim() ?? '';
+    return character.systemInstruction.trim();
   }
 
   String _getCharacterScenario(Character? character) {
@@ -3725,15 +4045,9 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
     WorldInfoEntry entry,
     Character? character,
   ) {
-    final content = _replaceMacros(entry.content.trim(), character);
-    if (content.isEmpty) {
-      return '';
-    }
-    final comment = entry.comment.trim();
-    if (comment.isEmpty) {
-      return content;
-    }
-    return '[$comment]\n$content';
+    // 世界书的 `comment` 只是条目标题（给用户看的），酒馆不会把它写进 prompt。
+    // 之前拼成 `[comment]\ncontent` 会把标题一起送给模型，属于多余 token 与噪音。
+    return _replaceMacros(entry.content.trim(), character);
   }
 
   String _buildMemoryBlock() {
@@ -3785,25 +4099,54 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
 
   int _getConfiguredContextSize() {
     final connection = _ref.read(activeApiConnectionProvider);
-    final raw = connection?.parameters['context_size'];
-    if (raw is num) {
-      return raw.toInt().clamp(512, 1 << 20);
+
+    // 1) 连接上显式配置的上下文窗口优先。
+    final explicit = _readPositiveInt(connection?.parameters['context_size']);
+    if (explicit != null) {
+      return explicit.clamp(512, 1 << 21);
     }
-    if (raw is String) {
-      final parsed = int.tryParse(raw);
-      if (parsed != null) {
-        return parsed.clamp(512, 1 << 20);
-      }
+
+    // 2) 按协议给出合理默认值（OpenAI 兼容 8k / Claude 200k / Gemini 32k / 本地 4k）。
+    //    旧实现恒返回 4096，导致长上下文模型被白白浪费。
+    if (connection != null) {
+      return resolveChatAdapter(connection.platform)
+          .defaultContextSize
+          .clamp(512, 1 << 21);
     }
+
     return _defaultMaxContextTokens;
   }
 
+  int? _readPositiveInt(dynamic raw) {
+    if (raw is num) {
+      final value = raw.toInt();
+      return value > 0 ? value : null;
+    }
+    if (raw is String) {
+      final parsed = int.tryParse(raw.trim());
+      if (parsed != null && parsed > 0) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
+  /// 为模型回复预留的 token 数（同时也是请求里的 `max_tokens`）。
+  ///
+  /// 直接采用预设里的 `max_tokens`，只做两个保护性收敛：下限 128；
+  /// 上限不超过上下文窗口本身（留 512 token 给提示词，避免空窗）。
+  ///
+  /// 注意：这里曾经额外用 `contextSize / 3` 封顶，导致本地模型
+  /// （`context_size` 默认 2048）的 max_tokens 被从 2000 压到 682，
+  /// 回复长度肉眼可见地变短。上下文不足的问题由 `historyBudget`
+  /// 那一侧收缩历史来处理，不该牺牲回复长度。
   int _getResponseReserveTokens(Preset? preset, int contextSize) {
     final configured = preset?.maxTokens ?? _defaultResponseReserve;
-    final maxReserve =
-        contextSize <= 384 ? contextSize : (contextSize / 3).floor();
-    final clamped = configured.clamp(128, maxReserve);
-    return clamped.toInt();
+    final maxReserve = math.max(
+      128,
+      contextSize <= 640 ? contextSize : contextSize - 512,
+    );
+    return configured.clamp(128, maxReserve).toInt();
   }
 
   _PromptWorldInfoGroups _groupWorldInfoByPosition(
@@ -3866,18 +4209,32 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
     );
   }
 
+  /// 规范化角色名。酒馆生态里 preset / 世界书的 role 字段写法很杂
+  /// （`ai` / `bot` / `char` / `human` / `sys`），统一收敛到 OpenAI 的三种角色。
   String _normalizeRole(String role) {
-    final value = role.trim().toLowerCase();
-    if (value == 'assistant' || value == 'user' || value == 'system') {
-      return value;
+    switch (role.trim().toLowerCase()) {
+      case 'assistant':
+      case 'ai':
+      case 'bot':
+      case 'char':
+      case 'character':
+        return 'assistant';
+      case 'user':
+      case 'human':
+      case 'me':
+        return 'user';
+      case 'system':
+      case 'sys':
+        return 'system';
+      default:
+        return 'system';
     }
-    return 'system';
   }
 
   String _normalizeWorldInfoRole(String role) {
-    final value = role.trim().toLowerCase();
-    if (value == 'user' || value == 'assistant') {
-      return value;
+    final normalized = _normalizeRole(role);
+    if (normalized == 'user' || normalized == 'assistant') {
+      return normalized;
     }
     return 'system';
   }
@@ -3993,6 +4350,9 @@ class _WorldInfoCandidate {
   final String sourceKind;
   final int sourceOrder;
 
+  /// 命中关键词的计数（至少为 1）。供「使用群组评分」时在同一群组内排序。
+  final int score;
+
   const _WorldInfoCandidate({
     required this.triggerKey,
     required this.entry,
@@ -4000,6 +4360,7 @@ class _WorldInfoCandidate {
     required this.worldInfoName,
     required this.sourceKind,
     required this.sourceOrder,
+    this.score = 1,
   });
 }
 
@@ -4022,8 +4383,16 @@ class _TriggeredWorldInfoEntry {
 class _ConstructedPromptResult {
   final List<_PromptAssemblyMessage> assemblyMessages;
 
+  /// 本次装配使用的上下文窗口。
+  final int maxContextTokens;
+
+  /// 为模型回复预留的 token 数（同时也是请求里的 max_tokens）。
+  final int responseReserveTokens;
+
   const _ConstructedPromptResult({
     required this.assemblyMessages,
+    this.maxContextTokens = 0,
+    this.responseReserveTokens = 0,
   });
 
   List<ChatMessage> get messages =>

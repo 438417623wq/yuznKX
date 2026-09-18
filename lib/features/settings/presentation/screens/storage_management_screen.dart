@@ -98,10 +98,20 @@ class _StorageManagementScreenState
     _StorageSectionConfig(
       id: 'memory_tables',
       title: '记忆表',
-      subtitle: '角色记忆表数据',
+      subtitle: '会话级记忆表格数据',
       icon: Icons.memory_outlined,
       color: Color(0xFFFF9DDA),
-      boxNames: ['memory_tables'],
+      // 记忆表自 v3 起按**会话 ID**存储（`memory_tables_v3`），
+      // 插件设置同样是会话级（`memory_plugin_settings_v3`）。
+      // 一并纳入 v2（旧角色键）以便清理历史遗留数据。
+      // 注意：这里原本写的是 `memory_tables`（v1 的 Box 名），
+      // 自 v2 起就已失配，导致该项的容量统计与清除长期是空操作。
+      boxNames: [
+        'memory_tables_v3',
+        'memory_plugin_settings_v3',
+        'memory_tables_v2',
+        'memory_plugin_settings_v2',
+      ],
       clearable: true,
     ),
     _StorageSectionConfig(

@@ -64,6 +64,9 @@ class Preset {
   final int topK;
   final double repetitionPenalty;
   final int maxTokens;
+
+  /// 停止序列（Stop Strings）。命中后服务端立即停止生成。
+  final List<String> stopStrings;
   final List<PresetPrompt> prompts;
   final List<RegexScript> regexScripts;
 
@@ -115,6 +118,7 @@ class Preset {
     this.topK = defaultTopK,
     this.repetitionPenalty = defaultRepetitionPenalty,
     this.maxTokens = defaultMaxTokens,
+    this.stopStrings = const [],
     this.prompts = const [],
     this.regexScripts = const [],
     this.impersonationPrompt = '',
@@ -254,6 +258,16 @@ class Preset {
       reportBuilder.warn('max_tokens invalid. Using $defaultMaxTokens.');
     }
 
+    final stopStrings = _readStringListFromMaps(
+      _collectTextScopes(source),
+      const [
+        'stop_strings',
+        'stopStrings',
+        'stop_sequences',
+        'stopSequences',
+      ],
+    );
+
     final promptEntries = _extractPromptEntries(source);
     final promptOrderContexts = _extractPromptOrderContexts(source);
     final usePromptManagerSemantics = _shouldUsePromptManagerSemantics(
@@ -312,6 +326,7 @@ class Preset {
       topK: topK,
       repetitionPenalty: repetitionPenalty,
       maxTokens: maxTokens,
+      stopStrings: stopStrings,
       prompts: orderedPrompts,
       regexScripts: parsedRegexScripts,
       impersonationPrompt: _readStringFromMaps(textScopes, const [
@@ -418,6 +433,7 @@ class Preset {
     int? topK,
     double? repetitionPenalty,
     int? maxTokens,
+    List<String>? stopStrings,
     List<PresetPrompt>? prompts,
     List<RegexScript>? regexScripts,
     String? impersonationPrompt,
@@ -437,6 +453,7 @@ class Preset {
       topK: topK ?? this.topK,
       repetitionPenalty: repetitionPenalty ?? this.repetitionPenalty,
       maxTokens: maxTokens ?? this.maxTokens,
+      stopStrings: stopStrings ?? this.stopStrings,
       prompts: prompts ?? this.prompts,
       regexScripts: regexScripts ?? this.regexScripts,
       impersonationPrompt: impersonationPrompt ?? this.impersonationPrompt,
@@ -512,6 +529,36 @@ class Preset {
       return '';
     }
     return value.toString();
+  }
+
+  /// 读取字符串列表（停止序列等）。支持 JSON 数组与换行分隔的字符串。
+  static List<String> _readStringListFromMaps(
+      List<Map<String, dynamic>> maps, List<String> keys) {
+    final value = _readAnyFromMaps(maps, keys);
+    if (value == null) {
+      return const <String>[];
+    }
+
+    if (value is List) {
+      final items = <String>[];
+      for (final item in value) {
+        final text = item?.toString().trim() ?? '';
+        if (text.isNotEmpty) {
+          items.add(text);
+        }
+      }
+      return items;
+    }
+
+    final text = value.toString().trim();
+    if (text.isEmpty) {
+      return const <String>[];
+    }
+    return text
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toList(growable: false);
   }
 
   static List<dynamic> _extractPromptEntries(Map<String, dynamic> source) {
@@ -620,14 +667,18 @@ class Preset {
       systemPrompt: systemPrompt,
       marker: marker,
       position: relativePosition,
-      attachRole: _firstNonEmptyString(
-        [_readAny(map, const ['attach_role', 'attachRole'])],
+      attachRole: _normalizeAttachRole(
+        _firstNonEmptyString(
+          [_readAny(map, const ['attach_role', 'attachRole'])],
+        ),
       ),
       attachIndex: _parseOptionalInt(
         _readAny(map, const ['attach_index', 'attachIndex']),
       ),
-      attachSide: _firstNonEmptyString(
-        [_readAny(map, const ['attach_side', 'attachSide'])],
+      attachSide: _normalizeAttachSide(
+        _firstNonEmptyString(
+          [_readAny(map, const ['attach_side', 'attachSide'])],
+        ),
       ),
       legacyPositioning: legacyPositioning,
     );
@@ -804,11 +855,13 @@ class Preset {
                   defaultValue: PresetPrompt.defaultInjectionOrder,
                 ),
           role: roleRaw == null ? null : _normalizeRole(roleRaw.toString()),
-          attachRole:
-              attachRoleRaw == null ? null : attachRoleRaw.toString().trim(),
+          attachRole: _normalizeAttachRole(
+            attachRoleRaw == null ? null : attachRoleRaw.toString(),
+          ),
           attachIndex: _parseOptionalInt(attachIndexRaw),
-          attachSide:
-              attachSideRaw == null ? null : attachSideRaw.toString().trim(),
+          attachSide: _normalizeAttachSide(
+            attachSideRaw == null ? null : attachSideRaw.toString(),
+          ),
         ),
       );
     }
@@ -1519,6 +1572,35 @@ class Preset {
     return true;
   }
 
+  /// Attach Role 下拉框只接受 system / user / assistant。
+  /// 导入的预设可能写 `AI` / `char` / `human`，不归一化会让下拉框取值不匹配而崩溃。
+  static String? _normalizeAttachRole(String? raw) {
+    if (raw == null || raw.trim().isEmpty) {
+      return null;
+    }
+    return _normalizeRole(raw);
+  }
+
+  /// Attach Side 只接受 start / end，其余别名统一收敛，无法识别时返回 null。
+  static String? _normalizeAttachSide(String? raw) {
+    if (raw == null) {
+      return null;
+    }
+    switch (raw.trim().toLowerCase()) {
+      case 'start':
+      case 'before':
+      case 'top':
+      case 'beginning':
+        return 'start';
+      case 'end':
+      case 'after':
+      case 'bottom':
+        return 'end';
+      default:
+        return null;
+    }
+  }
+
   static String _normalizeRole(String rawRole) {
     final role = rawRole.trim().toLowerCase();
     if (role == 'system' || role == 'assistant' || role == 'user') {
@@ -1638,20 +1720,24 @@ class PresetPrompt {
           const ['position', 'relative_position', 'relativePosition'],
         ),
       ),
-      attachRole: Preset._readAny(
-        json,
-        const ['attach_role', 'attachRole'],
-      )?.toString(),
+      attachRole: Preset._normalizeAttachRole(
+        Preset._readAny(
+          json,
+          const ['attach_role', 'attachRole'],
+        )?.toString(),
+      ),
       attachIndex: Preset._parseOptionalInt(
         Preset._readAny(
           json,
           const ['attach_index', 'attachIndex'],
         ),
       ),
-      attachSide: Preset._readAny(
-        json,
-        const ['attach_side', 'attachSide'],
-      )?.toString(),
+      attachSide: Preset._normalizeAttachSide(
+        Preset._readAny(
+          json,
+          const ['attach_side', 'attachSide'],
+        )?.toString(),
+      ),
       legacyPositioning: Preset._parseOptionalBool(
             Preset._readAny(json, const ['legacy_positioning']),
           ) ??

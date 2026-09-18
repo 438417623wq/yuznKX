@@ -4,23 +4,142 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 
-import '../../character/data/character_provider.dart';
+import '../../chat/data/session_provider.dart';
 import '../domain/models/memory_table.dart';
 
-const _memoryTablesBoxName = 'memory_tables_v2';
-const _memorySettingsBoxName = 'memory_plugin_settings_v2';
+/// 记忆表格存储：键为**会话 ID**（每条对话一份独立记忆）。
+const _memoryTablesBoxName = 'memory_tables_v3';
 
+/// 记忆插件设置存储：键为**会话 ID**。
+const _memorySettingsBoxName = 'memory_plugin_settings_v3';
+
+/// 旧版（角色键）记忆存储，仅作为迁移来源，**不再写入**。
+const _legacyMemoryTablesBoxName = 'memory_tables_v2';
+const _legacyMemorySettingsBoxName = 'memory_plugin_settings_v2';
+
+/// 迁移完成标记，存在 `settings` box 里。
+const _memoryMigrationFlagKey = 'memory_v3_migrated';
+const _migrationFlagBoxName = 'settings';
+
+/// 保证「角色键 → 会话键」迁移只跑一次，且**先于任何读取**完成。
+///
+/// 用模块级 Future 缓存：迁移与两个 Notifier 的 `_init` 都是异步的。
+/// 若不 await，就可能出现「Notifier 先读到空 → 写入默认模板 → 迁移发现目标
+/// 已有数据于是跳过」的顺序，导致旧记忆永远迁不过来。
+Future<void>? _memoryMigrationFuture;
+
+Future<void> _ensureMemoryMigrated() {
+  return _memoryMigrationFuture ??= _migrateMemoryToSessionKeyOnce();
+}
+
+int _readEpochMillis(dynamic value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  if (value is String) {
+    return DateTime.tryParse(value)?.millisecondsSinceEpoch ?? 0;
+  }
+  return 0;
+}
+
+/// 一次性迁移：把旧的角色级记忆继承给该角色**最近更新**的那条会话。
+///
+/// 规则：
+/// - 每个角色只挑一条会话继承（`updatedAt` 最大的那条），其余会话从默认模板开始；
+/// - 旧的 v2 数据**保留不删**，作为回滚保险；
+/// - 迁移成功后写入 `settings` box 的 [_memoryMigrationFlagKey] 标记。
+///
+/// 为什么必须用标记位、而不是「v3 没有数据就继承」：用户之后新建的对话
+/// `updatedAt` 恰好是最新的，用后者判断会让**新对话误继承旧角色的记忆**。
+Future<void> _migrateMemoryToSessionKeyOnce() async {
+  final flagBox = await Hive.openBox(_migrationFlagBoxName);
+  if (flagBox.get(_memoryMigrationFlagKey) == true) {
+    return;
+  }
+
+  try {
+    final legacyTables = await Hive.openBox(_legacyMemoryTablesBoxName);
+    final legacySettings = await Hive.openBox(_legacyMemorySettingsBoxName);
+    final tablesBox = await Hive.openBox(_memoryTablesBoxName);
+    final settingsBox = await Hive.openBox(_memorySettingsBoxName);
+
+    // 直接读 sessions box，避免依赖 Riverpod 容器（此时容器可能尚未就绪）。
+    final sessionBox = await Hive.openBox('sessions');
+    final latestByCharacter = <String, MapEntry<String, int>>{};
+    for (final raw in sessionBox.values) {
+      if (raw is! Map) {
+        continue;
+      }
+      final map = Map<String, dynamic>.from(raw);
+      final id = (map['id'] ?? '').toString().trim();
+      final characterId = (map['characterId'] ?? '').toString().trim();
+      if (id.isEmpty || characterId.isEmpty) {
+        continue;
+      }
+      final updatedAt = _readEpochMillis(map['updatedAt']);
+      final current = latestByCharacter[characterId];
+      if (current == null || updatedAt > current.value) {
+        latestByCharacter[characterId] = MapEntry(id, updatedAt);
+      }
+    }
+
+    for (final entry in latestByCharacter.entries) {
+      final characterId = entry.key;
+      final targetSessionId = entry.value.key;
+
+      final legacyTableData = legacyTables.get(characterId);
+      if (legacyTableData != null && tablesBox.get(targetSessionId) == null) {
+        await tablesBox.put(targetSessionId, legacyTableData);
+      }
+
+      final legacySettingData = legacySettings.get(characterId);
+      if (legacySettingData != null &&
+          settingsBox.get(targetSessionId) == null) {
+        await settingsBox.put(targetSessionId, legacySettingData);
+      }
+    }
+
+    await flagBox.put(_memoryMigrationFlagKey, true);
+  } catch (error) {
+    // 不写标记，下次启动重试。已迁移成功的部分不会被重复覆盖（上面有 null 判断）。
+    print('Memory migration to session key failed: $error');
+  }
+}
+
+/// 删除某条会话时，清理它独占的记忆数据（表格 + 插件设置）。
+///
+/// 由 `SessionNotifier.deleteSession` 调用，保证「删对话即删记忆」。
+/// 不清理会留下孤儿数据；更麻烦的是 sessionId 一旦被复用（导入备份、
+/// 恢复数据等场景），旧记忆会串到新会话上。
+Future<void> purgeSessionScopedMemory(String sessionId) async {
+  try {
+    final tablesBox = await Hive.openBox(_memoryTablesBoxName);
+    if (tablesBox.containsKey(sessionId)) {
+      await tablesBox.delete(sessionId);
+    }
+    final settingsBox = await Hive.openBox(_memorySettingsBoxName);
+    if (settingsBox.containsKey(sessionId)) {
+      await settingsBox.delete(sessionId);
+    }
+  } catch (error) {
+    print('Failed to purge session-scoped memory for $sessionId: $error');
+  }
+}
+
+/// 当前活跃会话的记忆表格。
+///
+/// 归属键是**会话 ID**：每条对话各持一份记忆，互不影响。
 final memoryProvider =
     StateNotifierProvider<MemoryNotifier, List<MemoryTable>>((ref) {
-  final activeChar = ref.watch(activeCharacterProvider);
-  return MemoryNotifier(activeChar?.id);
+  final sessionId = ref.watch(activeSessionIdProvider);
+  return MemoryNotifier(sessionId);
 });
 
+/// 当前活跃会话的记忆插件设置（同样是会话级）。
 final memoryPluginSettingsProvider =
     StateNotifierProvider<MemoryPluginSettingsNotifier, MemoryPluginSettings>(
         (ref) {
-  final activeChar = ref.watch(activeCharacterProvider);
-  return MemoryPluginSettingsNotifier(activeChar?.id);
+  final sessionId = ref.watch(activeSessionIdProvider);
+  return MemoryPluginSettingsNotifier(sessionId);
 });
 
 List<MemoryTable> getDefaultMemoryTables() {
@@ -32,12 +151,7 @@ MemoryTemplateBundle getDefaultMemoryTemplateBundle() {
     isPluginEnabled: true,
     isAiReadTable: true,
     isAiWriteTable: true,
-    injectionMode: 'deep_system',
     deep: 2,
-    confirmBeforeExecution: true,
-    useMainApi: true,
-    useTokenLimit: true,
-    rebuildTokenLimitValue: 100000,
     isHistoryRangeLimitEnabled: true,
     historyRangeStartFloor: 0,
     historyRangeEndFloor: -1,
@@ -136,34 +250,42 @@ MemoryTemplateBundle getDefaultMemoryTemplateBundle() {
 }
 
 class MemoryPluginSettingsNotifier extends StateNotifier<MemoryPluginSettings> {
-  final String? characterId;
+  /// 归属键：**会话 ID**。
+  final String? sessionId;
   Box? _box;
+  bool _ready = false;
 
-  MemoryPluginSettingsNotifier(this.characterId)
+  MemoryPluginSettingsNotifier(this.sessionId)
       : super(getDefaultMemoryTemplateBundle().settings) {
     _init();
   }
 
   Future<void> _init() async {
-    if (characterId == null) {
+    if (sessionId == null) {
       state = getDefaultMemoryTemplateBundle().settings;
       return;
     }
+    // 迁移必须先于首次读取，否则会把默认值抢先写进 v3，
+    // 让迁移逻辑误判「该会话已有数据」而跳过。
+    await _ensureMemoryMigrated();
+
     _box = await Hive.openBox(_memorySettingsBoxName);
-    final raw = _box!.get(characterId);
-    if (raw is Map) {
-      state = MemoryPluginSettings.fromJson(Map<String, dynamic>.from(raw));
-    } else {
-      state = getDefaultMemoryTemplateBundle().settings;
+    final raw = _box!.get(sessionId);
+    state = raw is Map
+        ? MemoryPluginSettings.fromJson(Map<String, dynamic>.from(raw))
+        : getDefaultMemoryTemplateBundle().settings;
+    _ready = true;
+    if (raw is! Map) {
       await save();
     }
   }
 
   Future<void> save() async {
-    if (characterId == null || _box == null) {
+    // _ready 之前不落盘：那时 state 还是初始值，写下去会把已有数据抹掉。
+    if (!_ready || sessionId == null || _box == null) {
       return;
     }
-    await _box!.put(characterId, state.toJson());
+    await _box!.put(sessionId, state.toJson());
   }
 
   void update(MemoryPluginSettings newSettings) {
@@ -175,16 +297,7 @@ class MemoryPluginSettingsNotifier extends StateNotifier<MemoryPluginSettings> {
     bool? isPluginEnabled,
     bool? isAiReadTable,
     bool? isAiWriteTable,
-    String? injectionMode,
     int? deep,
-    String? messageTemplate,
-    bool? confirmBeforeExecution,
-    bool? useMainApi,
-    bool? useTokenLimit,
-    int? rebuildTokenLimitValue,
-    String? toChatContainer,
-    bool? tableToChatCanEdit,
-    String? tableToChatMode,
     bool? isHistoryRangeLimitEnabled,
     int? historyRangeStartFloor,
     int? historyRangeEndFloor,
@@ -195,16 +308,7 @@ class MemoryPluginSettingsNotifier extends StateNotifier<MemoryPluginSettings> {
       isPluginEnabled: isPluginEnabled,
       isAiReadTable: isAiReadTable,
       isAiWriteTable: isAiWriteTable,
-      injectionMode: injectionMode,
       deep: deep,
-      messageTemplate: messageTemplate,
-      confirmBeforeExecution: confirmBeforeExecution,
-      useMainApi: useMainApi,
-      useTokenLimit: useTokenLimit,
-      rebuildTokenLimitValue: rebuildTokenLimitValue,
-      toChatContainer: toChatContainer,
-      tableToChatCanEdit: tableToChatCanEdit,
-      tableToChatMode: tableToChatMode,
       isHistoryRangeLimitEnabled: isHistoryRangeLimitEnabled,
       historyRangeStartFloor: historyRangeStartFloor,
       historyRangeEndFloor: historyRangeEndFloor,
@@ -221,21 +325,26 @@ class MemoryPluginSettingsNotifier extends StateNotifier<MemoryPluginSettings> {
 }
 
 class MemoryNotifier extends StateNotifier<List<MemoryTable>> {
-  final String? characterId;
+  /// 归属键：**会话 ID**。每条对话一份独立记忆。
+  final String? sessionId;
   Box? _box;
+  bool _ready = false;
 
-  MemoryNotifier(this.characterId) : super(const []) {
+  MemoryNotifier(this.sessionId) : super(const []) {
     _init();
   }
 
   Future<void> _init() async {
-    if (characterId == null) {
+    if (sessionId == null) {
       state = const [];
       return;
     }
 
+    // 迁移必须先于首次读取（原因见 _ensureMemoryMigrated 的注释）。
+    await _ensureMemoryMigrated();
+
     _box = await Hive.openBox(_memoryTablesBoxName);
-    final raw = _box!.get(characterId);
+    final raw = _box!.get(sessionId);
 
     if (raw is List) {
       try {
@@ -254,19 +363,32 @@ class MemoryNotifier extends StateNotifier<List<MemoryTable>> {
       } catch (error) {
         print('Error loading memory tables: $error');
         state = getDefaultMemoryTables();
-        save();
+        _ready = true;
+        await save();
+        return;
       }
     } else {
       state = getDefaultMemoryTables();
-      save();
+      _ready = true;
+      await save();
+      return;
     }
+    _ready = true;
   }
 
   Future<void> save() async {
-    if (characterId == null || _box == null) {
+    // _ready 之前不落盘：那时 state 还是初始值（const []），
+    // 写下去会把该会话已有的记忆抹成空。
+    if (!_ready || sessionId == null || _box == null) {
       return;
     }
-    await _box!.put(characterId, state.map((table) => table.toJson()).toList());
+    await _box!.put(
+      sessionId,
+      state.map((table) => table.toJson()).toList(),
+    );
+    // 与 sessionProvider.updateSessionMessages 保持一致，显式 flush，
+    // 避免高频写表格时丢数据。
+    await _box!.flush();
   }
 
   void _commit(List<MemoryTable> nextState) {

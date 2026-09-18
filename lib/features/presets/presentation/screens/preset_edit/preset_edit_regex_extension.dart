@@ -3,6 +3,15 @@ part of '../preset_edit_screen.dart';
 // ignore_for_file: invalid_use_of_protected_member
 
 extension _PresetEditRegexExtension on _PresetEditScreenState {
+  // 导入的正则数据里 substituteRegex 可能是任意整数（0/1/2 之外），
+  // DropdownButton 取值不命中 items 会直接抛断言 -> 整页白屏，这里兜一层。
+  int _safeSubstituteRegex(int? value) {
+    if (value == 0 || value == 1 || value == 2) {
+      return value!;
+    }
+    return 0;
+  }
+
   Widget _buildRegexTab() {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
@@ -211,7 +220,7 @@ extension _PresetEditRegexExtension on _PresetEditScreenState {
                       ),
                       const SizedBox(height: 8),
                       DropdownButtonFormField<int>(
-                        initialValue: script.substituteRegex,
+                        initialValue: _safeSubstituteRegex(script.substituteRegex),
                         decoration: const InputDecoration(
                           labelText: '替换宏 (Substitute Regex)',
                           border: OutlineInputBorder(),

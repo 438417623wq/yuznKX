@@ -451,20 +451,17 @@ class MemoryTable {
   }
 }
 
+/// 记忆系统的运行设置。
+///
+/// 说明：原先还有 9 个字段（injectionMode / messageTemplate / confirmBeforeExecution /
+/// useMainApi / useTokenLimit / rebuildTokenLimitValue / toChatContainer /
+/// tableToChatCanEdit / tableToChatMode），但它们从未被任何逻辑消费 ——
+/// 要么零引用，要么只在设置界面里显示自己。已一并移除，读取旧数据时会自动忽略这些键。
 class MemoryPluginSettings {
   final bool isPluginEnabled;
   final bool isAiReadTable;
   final bool isAiWriteTable;
-  final String injectionMode;
   final int deep;
-  final String messageTemplate;
-  final bool confirmBeforeExecution;
-  final bool useMainApi;
-  final bool useTokenLimit;
-  final int rebuildTokenLimitValue;
-  final String toChatContainer;
-  final bool tableToChatCanEdit;
-  final String tableToChatMode;
   final bool isHistoryRangeLimitEnabled;
   final int historyRangeStartFloor;
   final int historyRangeEndFloor;
@@ -475,16 +472,7 @@ class MemoryPluginSettings {
     this.isPluginEnabled = true,
     this.isAiReadTable = true,
     this.isAiWriteTable = true,
-    this.injectionMode = 'deep_system',
     this.deep = 2,
-    this.messageTemplate = '',
-    this.confirmBeforeExecution = true,
-    this.useMainApi = true,
-    this.useTokenLimit = true,
-    this.rebuildTokenLimitValue = 100000,
-    this.toChatContainer = '<div class="table-preview-bar">\$0</div>',
-    this.tableToChatCanEdit = false,
-    this.tableToChatMode = 'last_message',
     this.isHistoryRangeLimitEnabled = true,
     this.historyRangeStartFloor = 0,
     this.historyRangeEndFloor = -1,
@@ -502,24 +490,7 @@ class MemoryPluginSettings {
           true,
       isAiReadTable: _asBool(json['isAiReadTable']) ?? true,
       isAiWriteTable: _asBool(json['isAiWriteTable']) ?? true,
-      injectionMode:
-          (json['injection_mode'] ?? json['injectionMode'] ?? 'deep_system')
-              .toString(),
       deep: _asInt(json['deep']) ?? 2,
-      messageTemplate:
-          (json['message_template'] ?? json['messageTemplate'] ?? '')
-              .toString(),
-      confirmBeforeExecution: _asBool(json['confirm_before_execution']) ?? true,
-      useMainApi: _asBool(json['use_main_api']) ?? true,
-      useTokenLimit: _asBool(json['use_token_limit']) ?? true,
-      rebuildTokenLimitValue:
-          _asInt(json['rebuild_token_limit_value']) ?? 100000,
-      toChatContainer: (json['to_chat_container'] ??
-              '<div class="table-preview-bar">\$0</div>')
-          .toString(),
-      tableToChatCanEdit: _asBool(json['table_to_chat_can_edit']) ?? false,
-      tableToChatMode:
-          (json['table_to_chat_mode'] ?? 'last_message').toString(),
       isHistoryRangeLimitEnabled:
           _asBool(json['is_history_range_limit_enabled']) ??
               _asBool(json['isHistoryRangeLimitEnabled']) ??
@@ -544,16 +515,7 @@ class MemoryPluginSettings {
         'is_plugin_enabled': isPluginEnabled,
         'isAiReadTable': isAiReadTable,
         'isAiWriteTable': isAiWriteTable,
-        'injection_mode': injectionMode,
         'deep': deep,
-        'message_template': messageTemplate,
-        'confirm_before_execution': confirmBeforeExecution,
-        'use_main_api': useMainApi,
-        'use_token_limit': useTokenLimit,
-        'rebuild_token_limit_value': rebuildTokenLimitValue,
-        'to_chat_container': toChatContainer,
-        'table_to_chat_can_edit': tableToChatCanEdit,
-        'table_to_chat_mode': tableToChatMode,
         'isHistoryRangeLimitEnabled': isHistoryRangeLimitEnabled,
         'is_history_range_limit_enabled': isHistoryRangeLimitEnabled,
         'historyRangeStartFloor': historyRangeStartFloor,
@@ -570,16 +532,7 @@ class MemoryPluginSettings {
     bool? isPluginEnabled,
     bool? isAiReadTable,
     bool? isAiWriteTable,
-    String? injectionMode,
     int? deep,
-    String? messageTemplate,
-    bool? confirmBeforeExecution,
-    bool? useMainApi,
-    bool? useTokenLimit,
-    int? rebuildTokenLimitValue,
-    String? toChatContainer,
-    bool? tableToChatCanEdit,
-    String? tableToChatMode,
     bool? isHistoryRangeLimitEnabled,
     int? historyRangeStartFloor,
     int? historyRangeEndFloor,
@@ -590,18 +543,7 @@ class MemoryPluginSettings {
       isPluginEnabled: isPluginEnabled ?? this.isPluginEnabled,
       isAiReadTable: isAiReadTable ?? this.isAiReadTable,
       isAiWriteTable: isAiWriteTable ?? this.isAiWriteTable,
-      injectionMode: injectionMode ?? this.injectionMode,
       deep: deep ?? this.deep,
-      messageTemplate: messageTemplate ?? this.messageTemplate,
-      confirmBeforeExecution:
-          confirmBeforeExecution ?? this.confirmBeforeExecution,
-      useMainApi: useMainApi ?? this.useMainApi,
-      useTokenLimit: useTokenLimit ?? this.useTokenLimit,
-      rebuildTokenLimitValue:
-          rebuildTokenLimitValue ?? this.rebuildTokenLimitValue,
-      toChatContainer: toChatContainer ?? this.toChatContainer,
-      tableToChatCanEdit: tableToChatCanEdit ?? this.tableToChatCanEdit,
-      tableToChatMode: tableToChatMode ?? this.tableToChatMode,
       isHistoryRangeLimitEnabled:
           isHistoryRangeLimitEnabled ?? this.isHistoryRangeLimitEnabled,
       historyRangeStartFloor:

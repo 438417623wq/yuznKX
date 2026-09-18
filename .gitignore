@@ -50,3 +50,6 @@ app.*.map.json
 
 # WorkBuddy AI workspace data (agent-local, not source)
 .workbuddy-ai/
+
+# Root-level release APK copy (build artifact, not source)
+/yuanKX-release.apk

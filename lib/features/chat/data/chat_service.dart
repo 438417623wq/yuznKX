@@ -5,7 +5,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../api_connection/domain/models/api_connection.dart';
 import '../domain/models/chat_message.dart';
 import 'local_llm_service.dart';
+import 'transport/chat_transport.dart';
+import 'transport/local_chat_template.dart';
 
+/// HTTP 传输层。
+///
+/// 本类只负责：重试、取消、SSE 分行、错误格式化。
+/// 「用哪个协议说话」由 [ChatProtocolAdapter] 决定。
 class ChatService {
   final Dio _dio = Dio();
   final Ref ref;
@@ -30,54 +36,58 @@ class ChatService {
       ..receiveTimeout = const Duration(seconds: 90);
   }
 
+  /// 兼容旧调用点。
   static List<Map<String, dynamic>> serializeMessagesForApi(
     List<ChatMessage> messages,
   ) {
-    return [
-      for (final message in messages) _serializeMessageForApi(message),
-    ];
+    return serializeChatMessages(messages);
   }
 
-  static const Set<String> _openAiCompatibleParameterKeys = <String>{
-    'temperature',
-    'top_p',
-    'presence_penalty',
-    'frequency_penalty',
-    'max_tokens',
-    'max_completion_tokens',
-    'stop',
-    'n',
-    'seed',
-    'logit_bias',
-    'response_format',
-    'tools',
-    'tool_choice',
-    'user',
-    'metadata',
-  };
+  ChatProtocolAdapter adapterFor(ApiConnection connection) {
+    return resolveChatAdapter(connection.platform);
+  }
 
-  Future<String> sendMessage({
+  Future<ChatCompletionResult> sendMessage({
     required ApiConnection connection,
     required List<ChatMessage> messages,
     Map<String, dynamic>? parameters,
     String? overrideModel,
     CancelToken? cancelToken,
   }) async {
-    if (connection.platform == ApiPlatform.local.label) {
-      final stream = streamMessage(
+    final adapter = adapterFor(connection);
+
+    if (adapter.isLocal) {
+      final buffer = StringBuffer();
+      ChatUsage? usage;
+      String? finishReason;
+
+      await for (final event in streamMessage(
         connection: connection,
         messages: messages,
         parameters: parameters,
         overrideModel: overrideModel,
         cancelToken: cancelToken,
+      )) {
+        if (event.text != null && event.text!.isNotEmpty) {
+          buffer.write(event.text);
+        }
+        if (event.usage != null) {
+          usage = usage?.merge(event.usage) ?? event.usage;
+        }
+        finishReason = event.finishReason ?? finishReason;
+      }
+
+      return ChatCompletionResult(
+        text: buffer.toString(),
+        usage: usage,
+        finishReason: finishReason,
       );
-      return stream.join();
     }
 
-    final baseUrl = _normalizeBaseUrl(connection.baseUrl);
-    final url = '$baseUrl/chat/completions';
-    final body = _buildRequestBody(
-      model: overrideModel ?? connection.model,
+    final model = overrideModel ?? connection.model;
+    final uri = adapter.buildUri(connection, stream: false);
+    final body = adapter.buildRequestBody(
+      model: model,
       messages: messages,
       stream: false,
       parameters: parameters,
@@ -85,14 +95,16 @@ class ChatService {
 
     try {
       final response = await _postWithRetry(
-        url: url,
-        options: Options(headers: _buildHeaders(connection)),
+        url: uri.toString(),
+        options: Options(
+          headers: adapter.buildHeaders(connection, stream: false),
+        ),
         data: body,
         cancelToken: cancelToken,
       );
-      final content = _extractTextFromResponseJson(response.data);
-      if (content.isNotEmpty) {
-        return content;
+      final result = adapter.parseResponse(response.data);
+      if (result.text.isNotEmpty) {
+        return result;
       }
       throw Exception('Invalid response format: no text content.');
     } on DioException catch (e) {
@@ -100,67 +112,39 @@ class ChatService {
     }
   }
 
-  Stream<String> streamMessage({
+  Stream<ChatStreamEvent> streamMessage({
     required ApiConnection connection,
     required List<ChatMessage> messages,
     Map<String, dynamic>? parameters,
     String? overrideModel,
     CancelToken? cancelToken,
   }) async* {
-    if (connection.platform == ApiPlatform.local.label) {
-      if (connection.localModelPath == null ||
-          connection.localModelPath!.isEmpty) {
-        throw Exception('Local model path is not set.');
-      }
+    final adapter = adapterFor(connection);
 
-      final localService = ref.read(localLlmServiceProvider);
-
-      final StringBuffer promptBuilder = StringBuffer();
-      for (final msg in messages) {
-        final apiMessage = _serializeMessageForApi(msg);
-        final role = apiMessage['role']?.toString() ?? 'user';
-        final content = apiMessage['content']?.toString() ?? '';
-        if (content.trim().isEmpty) {
-          continue;
-        }
-
-        final explicitName = apiMessage['name']?.toString().trim() ?? '';
-        final label = explicitName.isNotEmpty
-            ? explicitName
-            : switch (role) {
-                'assistant' => 'Assistant',
-                'system' => 'System',
-                _ => 'User',
-              };
-
-        promptBuilder.writeln('$label: $content');
-      }
-      promptBuilder.write('Assistant:');
-
-      yield* localService.streamResponse(
-        modelPath: connection.localModelPath!,
-        prompt: promptBuilder.toString(),
-        parameters: parameters,
-      );
+    if (adapter.isLocal) {
+      yield* _streamLocal(connection, messages, parameters);
       return;
     }
 
-    final baseUrl = _normalizeBaseUrl(connection.baseUrl);
-    final url = '$baseUrl/chat/completions';
-    final body = _buildRequestBody(
-      model: overrideModel ?? connection.model,
-      messages: messages,
-      stream: true,
-      parameters: parameters,
-    );
+    final model = overrideModel ?? connection.model;
+    var requestParameters = parameters;
+    var streamOptionsDropped = false;
 
     for (var attempt = 1; attempt <= _maxRequestAttempts; attempt++) {
       var hasYielded = false;
       try {
+        final uri = adapter.buildUri(connection, stream: true, model: model);
+        final body = adapter.buildRequestBody(
+          model: model,
+          messages: messages,
+          stream: true,
+          parameters: requestParameters,
+        );
+
         final response = await _dio.post(
-          url,
+          uri.toString(),
           options: Options(
-            headers: _buildHeaders(connection, stream: true),
+            headers: adapter.buildHeaders(connection, stream: true),
             responseType: ResponseType.stream,
           ),
           data: body,
@@ -182,45 +166,45 @@ class ChatService {
 
             final line = buffer.substring(0, index).trimRight();
             buffer = buffer.substring(index + 1);
-            final trimmed = line.trim();
 
-            if (!trimmed.startsWith('data:')) {
-              continue;
-            }
-
-            final data = trimmed.substring(5).trim();
-            if (data.isEmpty) {
-              continue;
-            }
-            if (data == '[DONE]') {
-              return;
-            }
-
-            final chunks = _extractTextChunksFromSsePayload(data);
-            for (final text in chunks) {
-              if (text.isNotEmpty) {
-                hasYielded = true;
-                yield text;
+            final events = _parseSseLine(adapter, line);
+            for (final event in events) {
+              if (event.isEmpty) {
+                continue;
               }
+              if (event.text != null && event.text!.isNotEmpty) {
+                hasYielded = true;
+              }
+              yield event;
             }
           }
         }
 
-        final tail = buffer.trim();
-        if (tail.startsWith('data:')) {
-          final data = tail.substring(5).trim();
-          if (data.isNotEmpty && data != '[DONE]') {
-            final chunks = _extractTextChunksFromSsePayload(data);
-            for (final text in chunks) {
-              if (text.isNotEmpty) {
-                hasYielded = true;
-                yield text;
-              }
-            }
+        final tailEvents = _parseSseLine(adapter, buffer.trim());
+        for (final event in tailEvents) {
+          if (event.isEmpty) {
+            continue;
           }
+          if (event.text != null && event.text!.isNotEmpty) {
+            hasYielded = true;
+          }
+          yield event;
         }
         return;
       } on DioException catch (e) {
+        // 部分 OpenAI 兼容服务端不认 `stream_options`，做一次性兼容回退。
+        if (!hasYielded &&
+            !streamOptionsDropped &&
+            _isStreamOptionsRejection(e)) {
+          streamOptionsDropped = true;
+          requestParameters = <String, dynamic>{
+            ...?parameters,
+            'include_usage': false,
+          };
+          attempt--;
+          continue;
+        }
+
         final shouldRetry =
             !hasYielded && attempt < _maxRequestAttempts && _isRetryable(e);
         if (!shouldRetry) {
@@ -233,274 +217,78 @@ class ChatService {
     }
   }
 
-  String _normalizeBaseUrl(String rawBaseUrl) {
-    final baseUrl = rawBaseUrl.trim();
-    if (baseUrl.isEmpty) {
-      throw Exception('Base URL is empty.');
+  /// 解析一行 SSE 文本（可能不是 `data:` 行）。
+  List<ChatStreamEvent> _parseSseLine(ChatProtocolAdapter adapter, String line) {
+    final trimmed = line.trim();
+    if (trimmed.isEmpty || !trimmed.startsWith('data:')) {
+      return const <ChatStreamEvent>[];
     }
-    return baseUrl.endsWith('/')
-        ? baseUrl.substring(0, baseUrl.length - 1)
-        : baseUrl;
+
+    final data = trimmed.substring(5).trim();
+    if (data.isEmpty || data == '[DONE]') {
+      return const <ChatStreamEvent>[];
+    }
+
+    return adapter.parseStreamPayload(data);
   }
 
-  Map<String, dynamic> _buildRequestBody({
-    required String model,
-    required List<ChatMessage> messages,
-    required bool stream,
+  Stream<ChatStreamEvent> _streamLocal(
+    ApiConnection connection,
+    List<ChatMessage> messages,
     Map<String, dynamic>? parameters,
-  }) {
-    final body = <String, dynamic>{
-      'model': model,
-      'messages': serializeMessagesForApi(messages),
-      'stream': stream,
-    };
-
-    if (parameters != null && parameters.isNotEmpty) {
-      body.addAll(_sanitizeParameters(parameters));
+  ) async* {
+    final modelPath = connection.localModelPath;
+    if (modelPath == null || modelPath.isEmpty) {
+      throw Exception('Local model path is not set.');
     }
 
-    return body;
-  }
+    final template = LocalChatTemplate.fromId(
+      parameters?['chat_template']?.toString(),
+    );
+    final resolvedTemplate = template == LocalChatTemplate.auto
+        ? LocalChatTemplate.detectFromModelName(modelPath)
+        : template;
 
-  static Map<String, dynamic> _serializeMessageForApi(ChatMessage message) {
-    final payload = <String, dynamic>{
-      'role': message.role,
-      'content': message.content,
-    };
+    final prompt = buildLocalChatPrompt(
+      messages: messages,
+      template: resolvedTemplate,
+    );
 
-    final rawName = message.metadata?['name']?.toString().trim() ?? '';
-    if (rawName.isNotEmpty) {
-      payload['name'] = rawName;
-    }
-
-    return payload;
-  }
-
-  Map<String, dynamic> _sanitizeParameters(Map<String, dynamic> parameters) {
-    final sanitized = <String, dynamic>{};
-    for (final entry in parameters.entries) {
-      if (entry.value == null) {
+    final localService = ref.read(localLlmServiceProvider);
+    await for (final chunk in localService.streamResponse(
+      modelPath: modelPath,
+      prompt: prompt,
+      parameters: parameters,
+    )) {
+      if (chunk.isEmpty) {
         continue;
       }
-      if (_openAiCompatibleParameterKeys.contains(entry.key)) {
-        sanitized[entry.key] = entry.value;
-      }
+      yield ChatStreamEvent(text: chunk);
     }
-    return sanitized;
   }
 
-  Map<String, String> _buildHeaders(ApiConnection connection,
-      {bool stream = false}) {
-    final headers = <String, String>{
-      'Content-Type': 'application/json',
-    };
-
-    if (stream) {
-      headers['Accept'] = 'text/event-stream';
+  bool _isStreamOptionsRejection(DioException exception) {
+    if (exception.response?.statusCode != 400) {
+      return false;
     }
 
-    final key = connection.apiKey.trim();
-    if (key.isNotEmpty) {
-      headers['Authorization'] = 'Bearer $key';
+    final data = exception.response?.data;
+    String text = '';
+    if (data is String) {
+      text = data;
+    } else if (data is Map) {
+      text = jsonEncode(data);
     }
 
-    return headers;
-  }
-
-  List<String> _extractTextChunksFromSsePayload(String payload) {
-    dynamic parsed;
-    try {
-      parsed = jsonDecode(payload);
-    } catch (_) {
-      return const <String>[];
+    if (text.isEmpty) {
+      // 流式响应下 Dio 不把 body 交给我们，无法判定 400 的原因。
+      // 保守地做一次「去掉 stream_options」的重试（有 flag 保护，只发生一次）。
+      return true;
     }
 
-    if (parsed is! Map) {
-      return const <String>[];
-    }
-
-    final map = Map<String, dynamic>.from(parsed);
-    final errorMessage = _extractErrorMessage(map);
-    if (errorMessage != null) {
-      throw Exception(errorMessage);
-    }
-
-    final chunks = <String>[];
-
-    final choices = map['choices'];
-    if (choices is List && choices.isNotEmpty) {
-      final firstChoice = choices.first;
-      if (firstChoice is Map) {
-        final firstMap = Map<String, dynamic>.from(firstChoice);
-        final delta = firstMap['delta'];
-        if (delta is Map) {
-          final deltaText = _contentToText(delta['content']);
-          if (deltaText.isNotEmpty) {
-            chunks.add(deltaText);
-          }
-          final directDeltaText = _contentToText(delta['text']);
-          if (directDeltaText.isNotEmpty) {
-            chunks.add(directDeltaText);
-          }
-        }
-
-        final text = _contentToText(firstMap['text']);
-        if (text.isNotEmpty) {
-          chunks.add(text);
-        }
-
-        final message = firstMap['message'];
-        if (message is Map) {
-          final messageText = _contentToText(message['content']);
-          if (messageText.isNotEmpty) {
-            chunks.add(messageText);
-          }
-        }
-      }
-    }
-
-    final delta = map['delta'];
-    if (delta is Map) {
-      final deltaText = _contentToText(delta['text']);
-      if (deltaText.isNotEmpty) {
-        chunks.add(deltaText);
-      }
-    }
-
-    return chunks;
-  }
-
-  String _extractTextFromResponseJson(dynamic data) {
-    if (data is! Map) {
-      return '';
-    }
-    final map = Map<String, dynamic>.from(data);
-
-    final errorMessage = _extractErrorMessage(map);
-    if (errorMessage != null) {
-      throw Exception(errorMessage);
-    }
-
-    final choices = map['choices'];
-    if (choices is List && choices.isNotEmpty) {
-      final firstChoice = choices.first;
-      if (firstChoice is Map) {
-        final choiceMap = Map<String, dynamic>.from(firstChoice);
-
-        final message = choiceMap['message'];
-        if (message is Map) {
-          final text = _contentToText(message['content']);
-          if (text.isNotEmpty) {
-            return text;
-          }
-        }
-
-        final text = _contentToText(choiceMap['text']);
-        if (text.isNotEmpty) {
-          return text;
-        }
-      }
-    }
-
-    final content = _contentToText(map['content']);
-    if (content.isNotEmpty) {
-      return content;
-    }
-
-    final candidates = map['candidates'];
-    if (candidates is List && candidates.isNotEmpty) {
-      final firstCandidate = candidates.first;
-      if (firstCandidate is Map) {
-        final candidateContent = firstCandidate['content'];
-        if (candidateContent is Map) {
-          final parts = candidateContent['parts'];
-          if (parts is List && parts.isNotEmpty) {
-            final buffer = StringBuffer();
-            for (final part in parts) {
-              if (part is Map) {
-                final text = _contentToText(part['text']);
-                if (text.isNotEmpty) {
-                  buffer.write(text);
-                }
-              }
-            }
-            if (buffer.isNotEmpty) {
-              return buffer.toString();
-            }
-          }
-        }
-      }
-    }
-
-    return '';
-  }
-
-  String _contentToText(dynamic content) {
-    if (content == null) {
-      return '';
-    }
-    if (content is String) {
-      return content;
-    }
-    if (content is num || content is bool) {
-      return content.toString();
-    }
-    if (content is List) {
-      final buffer = StringBuffer();
-      for (final item in content) {
-        if (item is String) {
-          buffer.write(item);
-          continue;
-        }
-        if (item is Map) {
-          final mapItem = Map<String, dynamic>.from(item);
-          final text = mapItem['text'];
-          if (text != null) {
-            buffer.write(text.toString());
-            continue;
-          }
-          final nested = mapItem['content'];
-          if (nested != null) {
-            buffer.write(_contentToText(nested));
-          }
-        }
-      }
-      return buffer.toString();
-    }
-    if (content is Map) {
-      final mapContent = Map<String, dynamic>.from(content);
-      if (mapContent['text'] != null) {
-        return mapContent['text'].toString();
-      }
-      if (mapContent['content'] != null) {
-        return _contentToText(mapContent['content']);
-      }
-    }
-    return '';
-  }
-
-  String? _extractErrorMessage(Map<String, dynamic> map) {
-    final error = map['error'];
-    if (error is String && error.trim().isNotEmpty) {
-      return error.trim();
-    }
-    if (error is Map) {
-      final errorMap = Map<String, dynamic>.from(error);
-      final message = errorMap['message'];
-      if (message is String && message.trim().isNotEmpty) {
-        return message.trim();
-      }
-      final type = errorMap['type'];
-      if (type is String && type.trim().isNotEmpty) {
-        return type.trim();
-      }
-    }
-
-    final message = map['message'];
-    if (message is String && message.trim().isNotEmpty) {
-      return message.trim();
-    }
-    return null;
+    final lowered = text.toLowerCase();
+    return lowered.contains('stream_options') ||
+        lowered.contains('include_usage');
   }
 
   Future<Response<dynamic>> _postWithRetry({
@@ -597,7 +385,7 @@ class ChatService {
 
     String details = '';
     if (data is Map) {
-      final message = _extractErrorMessage(Map<String, dynamic>.from(data));
+      final message = extractApiErrorMessage(Map<String, dynamic>.from(data));
       if (message != null && message.isNotEmpty) {
         details = message;
       }

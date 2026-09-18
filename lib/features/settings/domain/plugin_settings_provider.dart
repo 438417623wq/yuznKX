@@ -9,10 +9,8 @@ final pluginSettingsProvider =
 class PluginSettingsNotifier extends StateNotifier<Map<String, dynamic>> {
   PluginSettingsNotifier()
       : super({
-          'memory_masonry': true,
-          'memory_timeline': true,
-          'memory_dashboard': true,
-          'memory_vector': true,
+          // 记忆表格的展示形态：'card'（卡片列表，手机推荐）/ 'table'（表格）
+          'memory_view_mode': 'card',
           'frontend_advanced_render': true,
           'frontend_javascript_mode': 'auto',
           'frontend_character_card': true,
@@ -27,10 +25,8 @@ class PluginSettingsNotifier extends StateNotifier<Map<String, dynamic>> {
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
     state = {
-      'memory_masonry': prefs.getBool('plugin_memory_masonry') ?? true,
-      'memory_timeline': prefs.getBool('plugin_memory_timeline') ?? true,
-      'memory_dashboard': prefs.getBool('plugin_memory_dashboard') ?? true,
-      'memory_vector': prefs.getBool('plugin_memory_vector') ?? true,
+      'memory_view_mode':
+          prefs.getString('plugin_memory_view_mode') ?? 'card',
       'frontend_advanced_render':
           prefs.getBool('plugin_frontend_advanced_render') ??
               prefs.getBool('plugin_frontend_character_card') ??

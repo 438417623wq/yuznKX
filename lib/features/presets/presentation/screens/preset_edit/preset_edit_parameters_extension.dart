@@ -185,6 +185,44 @@ extension _PresetEditParametersExtension on _PresetEditScreenState {
             ),
           ),
         ),
+        Card(
+          elevation: 0,
+          margin: const EdgeInsets.only(bottom: 16),
+          color: _PresetEditScreenState._surfaceColor,
+          shape: _sectionShape(22),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'STOP STRINGS (停止序列)',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  '每行一条。模型输出命中任意一条时立即停止生成，'
+                  '可抑制「User:」「<|im_end|>」这类越界输出。',
+                  style: TextStyle(
+                    color: _PresetEditScreenState._textSecondaryColor,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _stopStringsCtrl,
+                  minLines: 2,
+                  maxLines: 5,
+                  style: const TextStyle(fontSize: 13),
+                  decoration: const InputDecoration(
+                    hintText: '例如：\n<|im_end|>\nUser:',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ],
     );
   }

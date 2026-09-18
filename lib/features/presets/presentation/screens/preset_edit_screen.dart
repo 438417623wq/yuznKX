@@ -48,6 +48,9 @@ class _PresetEditScreenState extends ConsumerState<PresetEditScreen> {
   late TextEditingController _continueNudgeCtrl;
   late TextEditingController _groupNudgePromptCtrl;
 
+  // 停止序列（每行一条）
+  late TextEditingController _stopStringsCtrl;
+
   // Prompts
   late List<PresetPrompt> _prompts;
   String _promptSearchQuery = '';
@@ -204,6 +207,9 @@ class _PresetEditScreenState extends ConsumerState<PresetEditScreen> {
     _continueNudgeCtrl = TextEditingController(text: p?.continueNudge ?? '');
     _groupNudgePromptCtrl =
         TextEditingController(text: p?.groupNudgePrompt ?? '');
+    _stopStringsCtrl = TextEditingController(
+      text: (p?.stopStrings ?? const <String>[]).join('\n'),
+    );
 
     _prompts = p?.prompts != null ? List.from(p!.prompts) : [];
     _regexScripts = p?.regexScripts != null ? List.from(p!.regexScripts) : [];
@@ -217,7 +223,16 @@ class _PresetEditScreenState extends ConsumerState<PresetEditScreen> {
     _newGroupChatPromptCtrl.dispose();
     _continueNudgeCtrl.dispose();
     _groupNudgePromptCtrl.dispose();
+    _stopStringsCtrl.dispose();
     super.dispose();
+  }
+
+  List<String> _parseStopStrings(String raw) {
+    return raw
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toList(growable: false);
   }
 
   void _save() {
@@ -228,6 +243,7 @@ class _PresetEditScreenState extends ConsumerState<PresetEditScreen> {
           temperature: _temp,
           repetitionPenalty: _repPen,
           maxTokens: _maxTokens,
+          stopStrings: _parseStopStrings(_stopStringsCtrl.text),
           topP: _topP,
           topK: _topK,
           frequencyPenalty: _freqPen,
@@ -246,6 +262,7 @@ class _PresetEditScreenState extends ConsumerState<PresetEditScreen> {
           temperature: _temp,
           repetitionPenalty: _repPen,
           maxTokens: _maxTokens,
+          stopStrings: _parseStopStrings(_stopStringsCtrl.text),
           topP: _topP,
           topK: _topK,
           frequencyPenalty: _freqPen,

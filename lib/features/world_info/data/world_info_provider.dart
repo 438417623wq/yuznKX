@@ -24,6 +24,22 @@ class WorldInfoScanSettings {
   final int budgetCap;
   final bool includeNames;
 
+  /// 递归扫描的最大层数。0 表示不限制（沿用扫描循环自身的 64 次上限）。
+  final int maxRecursionDepth;
+
+  /// 全局「区分大小写」开关。开启后所有条目按大小写敏感匹配，
+  /// 与条目自身的同名开关是「或」的关系（任一为真即生效）。
+  final bool caseSensitive;
+
+  /// 全局「匹配整个单词」开关，语义同上。
+  final bool matchWholeWords;
+
+  /// 群组内按命中关键词数量评分，得分高者优先入选。
+  final bool useGroupScoring;
+
+  /// 世界书 Token 预算溢出时在聊天页提示用户。
+  final bool alertOnOverflow;
+
   const WorldInfoScanSettings({
     this.scanDepth = 2,
     this.minActivations = 0,
@@ -33,6 +49,11 @@ class WorldInfoScanSettings {
     this.characterStrategy = WorldInfoCharacterStrategy.characterFirst,
     this.budgetCap = 0,
     this.includeNames = true,
+    this.maxRecursionDepth = 0,
+    this.caseSensitive = false,
+    this.matchWholeWords = false,
+    this.useGroupScoring = false,
+    this.alertOnOverflow = false,
   });
 
   WorldInfoScanSettings copyWith({
@@ -44,6 +65,11 @@ class WorldInfoScanSettings {
     WorldInfoCharacterStrategy? characterStrategy,
     int? budgetCap,
     bool? includeNames,
+    int? maxRecursionDepth,
+    bool? caseSensitive,
+    bool? matchWholeWords,
+    bool? useGroupScoring,
+    bool? alertOnOverflow,
   }) {
     return WorldInfoScanSettings(
       scanDepth: scanDepth ?? this.scanDepth,
@@ -55,6 +81,11 @@ class WorldInfoScanSettings {
       characterStrategy: characterStrategy ?? this.characterStrategy,
       budgetCap: budgetCap ?? this.budgetCap,
       includeNames: includeNames ?? this.includeNames,
+      maxRecursionDepth: maxRecursionDepth ?? this.maxRecursionDepth,
+      caseSensitive: caseSensitive ?? this.caseSensitive,
+      matchWholeWords: matchWholeWords ?? this.matchWholeWords,
+      useGroupScoring: useGroupScoring ?? this.useGroupScoring,
+      alertOnOverflow: alertOnOverflow ?? this.alertOnOverflow,
     );
   }
 
@@ -119,6 +150,12 @@ class WorldInfoScanSettings {
       characterStrategy: readStrategy(),
       budgetCap: readInt('world_info_budget_cap', 0).clamp(0, 1 << 20),
       includeNames: readBool('world_info_include_names', true),
+      maxRecursionDepth:
+          readInt('world_info_max_recursion_steps', 0).clamp(0, 1000),
+      caseSensitive: readBool('world_info_case_sensitive', false),
+      matchWholeWords: readBool('world_info_match_whole_words', false),
+      useGroupScoring: readBool('world_info_use_group_scoring', false),
+      alertOnOverflow: readBool('world_info_overflow_alert', false),
     );
   }
 }
@@ -268,5 +305,13 @@ class WorldInfoSettingsNotifier extends StateNotifier<WorldInfoScanSettings> {
     );
     await box.put('world_info_budget_cap', settings.budgetCap);
     await box.put('world_info_include_names', settings.includeNames);
+    await box.put(
+      'world_info_max_recursion_steps',
+      settings.maxRecursionDepth,
+    );
+    await box.put('world_info_case_sensitive', settings.caseSensitive);
+    await box.put('world_info_match_whole_words', settings.matchWholeWords);
+    await box.put('world_info_use_group_scoring', settings.useGroupScoring);
+    await box.put('world_info_overflow_alert', settings.alertOnOverflow);
   }
 }

@@ -3,6 +3,52 @@ part of '../preset_edit_screen.dart';
 // ignore_for_file: invalid_use_of_protected_member
 
 extension _PresetEditPromptsExtension on _PresetEditScreenState {
+  // ---------------------------------------------------------------------
+  // 下拉框取值兜底。
+  //
+  // Flutter 的 DropdownButton 要求 value 必须**恰好命中** items 中的一项，
+  // 否则构建期直接抛异常 —— 在 release 包里表现为整页白屏。
+  // 导入的预设数据不可控（例如 attach_side: "after"），所以这里再兜一层。
+  // ---------------------------------------------------------------------
+
+  String _safePromptRole(String? role) {
+    const allowed = ['system', 'user', 'assistant'];
+    final value = (role ?? '').trim().toLowerCase();
+    return allowed.contains(value) ? value : 'system';
+  }
+
+  String _safeAttachRole(String? role) {
+    const allowed = ['system', 'user', 'assistant'];
+    final value = (role ?? '').trim().toLowerCase();
+    if (allowed.contains(value)) {
+      return value;
+    }
+    if (value == 'ai' || value == 'bot' || value == 'model' || value == 'char') {
+      return 'assistant';
+    }
+    if (value == 'human' || value == 'me') {
+      return 'user';
+    }
+    return 'system';
+  }
+
+  String _safeAttachSide(String? side) {
+    final value = (side ?? '').trim().toLowerCase();
+    if (value == 'start' || value == 'before' || value == 'top') {
+      return 'start';
+    }
+    return 'end';
+  }
+
+  int _safeInjectionPosition(int position) {
+    if (position == Preset.relativeInjectionPosition ||
+        position == Preset.absoluteInjectionPosition ||
+        position == Preset.attachExistingInjectionPosition) {
+      return position;
+    }
+    return Preset.relativeInjectionPosition;
+  }
+
   Widget _buildPromptsTab() {
     final filteredPrompts = _prompts.where((prompt) {
       final query = _promptSearchQuery.trim().toLowerCase();
@@ -239,7 +285,7 @@ extension _PresetEditPromptsExtension on _PresetEditScreenState {
                     const SizedBox(width: 16),
                     Expanded(
                       child: DropdownButtonFormField<String>(
-                        initialValue: prompt.role,
+                        initialValue: _safePromptRole(prompt.role),
                         decoration: const InputDecoration(
                           labelText: 'Role',
                           border: OutlineInputBorder(),
@@ -296,7 +342,8 @@ extension _PresetEditPromptsExtension on _PresetEditScreenState {
                   children: [
                     Expanded(
                       child: DropdownButtonFormField<int>(
-                        initialValue: prompt.injectionPosition,
+                        initialValue:
+                            _safeInjectionPosition(prompt.injectionPosition),
                         decoration: const InputDecoration(
                           labelText: '注入位置',
                           border: OutlineInputBorder(),
@@ -447,7 +494,7 @@ extension _PresetEditPromptsExtension on _PresetEditScreenState {
                     children: [
                       Expanded(
                         child: DropdownButtonFormField<String>(
-                          initialValue: prompt.attachRole ?? 'system',
+                          initialValue: _safeAttachRole(prompt.attachRole),
                           decoration: const InputDecoration(
                             labelText: 'Attach Role',
                             border: OutlineInputBorder(),
@@ -503,7 +550,7 @@ extension _PresetEditPromptsExtension on _PresetEditScreenState {
                       const SizedBox(width: 16),
                       Expanded(
                         child: DropdownButtonFormField<String>(
-                          initialValue: prompt.attachSide ?? 'end',
+                          initialValue: _safeAttachSide(prompt.attachSide),
                           decoration: const InputDecoration(
                             labelText: 'Attach Side',
                             border: OutlineInputBorder(),

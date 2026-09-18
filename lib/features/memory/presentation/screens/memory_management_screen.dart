@@ -4,8 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../chat/data/session_provider.dart';
+import '../../../settings/domain/plugin_settings_provider.dart';
 import '../../data/memory_provider.dart';
 import '../../domain/models/memory_table.dart';
+import 'memory_settings_screen.dart';
 
 class MemoryManagementScreen extends ConsumerStatefulWidget {
   const MemoryManagementScreen({super.key});
@@ -30,11 +33,12 @@ class _MemoryManagementScreenState extends ConsumerState<MemoryManagementScreen>
 
   TabController? _tabController;
   int _activeTabIndex = 0;
-  bool _isPluginSettingsCollapsed = true;
   final Map<String, String> _searchTextByTable = {};
   final Map<String, ScrollController> _verticalControllers = {};
   final Map<String, ScrollController> _horizontalControllers = {};
-  final ScrollController _pluginSettingsController = ScrollController();
+
+  /// 卡片列表 / 表格 两种展示形态，默认卡片（更适合手机）。
+  static const String _viewModeKey = 'memory_view_mode';
 
   @override
   void dispose() {
@@ -46,44 +50,106 @@ class _MemoryManagementScreenState extends ConsumerState<MemoryManagementScreen>
     for (final controller in _horizontalControllers.values) {
       controller.dispose();
     }
-    _pluginSettingsController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final tables = ref.watch(memoryProvider);
-    final settings = ref.watch(memoryPluginSettingsProvider);
-    final viewportHeight = MediaQuery.sizeOf(context).height;
-    final pluginSettingsMaxHeight =
-        (viewportHeight * 0.48).clamp(280.0, 520.0).toDouble();
+    final plugins = ref.watch(pluginSettingsProvider);
+    final viewMode = plugins[_viewModeKey] == 'table' ? 'table' : 'card';
+
+    // 记忆归属当前会话。这里把会话名算出来展示在 AppBar，
+    // 避免用户把「切换对话后记忆变了」误判成数据丢失。
+    final activeSessionId = ref.watch(activeSessionIdProvider);
+    final sessions = ref.watch(sessionProvider);
+    var activeSessionName = '';
+    if (activeSessionId != null) {
+      for (final session in sessions) {
+        if (session.id == activeSessionId) {
+          activeSessionName = session.name;
+          break;
+        }
+      }
+    }
+
     _syncTabController(tables.length);
+
+    final hasActiveTable = tables.isNotEmpty &&
+        _activeTabIndex >= 0 &&
+        _activeTabIndex < tables.length;
+    final activeTable = hasActiveTable ? tables[_activeTabIndex] : null;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('记忆管理插件 (Memory)'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('记忆'),
+            // 记忆是**会话级**的，标明当前属于哪条对话。
+            Text(
+              activeSessionName.isEmpty ? '未选择对话' : '当前对话：$activeSessionName',
+              style: const TextStyle(fontSize: 11, color: Colors.white60),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
         backgroundColor: const Color(0xFF0E1A21),
         actions: [
-          IconButton(
-            tooltip: '导入模板 JSON',
-            icon: const Icon(Icons.upload_file_outlined),
-            onPressed: _showImportDialog,
-          ),
-          IconButton(
-            tooltip: '导出模板 JSON',
-            icon: const Icon(Icons.download_outlined),
-            onPressed: _showExportDialog,
-          ),
-          IconButton(
-            tooltip: '新建表格',
-            icon: const Icon(Icons.table_view),
-            onPressed: _showAddTableDialog,
-          ),
-          IconButton(
-            tooltip: '重置默认模板',
-            icon: const Icon(Icons.restore),
-            onPressed: _resetToDefault,
-          ),
+          if (activeTable != null)
+            PopupMenuButton<String>(
+              tooltip: '更多操作',
+              icon: const Icon(Icons.more_vert),
+              color: const Color(0xFF16242C),
+              onSelected: (value) {
+                switch (value) {
+                  case 'memory_settings':
+                    _openMemorySettings();
+                  case 'add_table':
+                    _showAddTableDialog();
+                  case 'table_settings':
+                    _showTableSettingsDialog(activeTable);
+                  case 'columns':
+                    _showColumnManagerDialog(activeTable);
+                  case 'style':
+                    _showTableStyleDialog(activeTable);
+                  case 'import':
+                    _showImportDialog();
+                  case 'export':
+                    _showExportDialog();
+                  case 'delete_table':
+                    _confirmDeleteTable(activeTable);
+                  case 'reset':
+                    _resetToDefault();
+                }
+              },
+              itemBuilder: (context) => [
+                _buildMenuItem('memory_settings', Icons.tune, '记忆设置'),
+                const PopupMenuDivider(),
+                _buildMenuItem('add_table', Icons.add_box_outlined, '新建表格'),
+                _buildMenuItem(
+                    'table_settings', Icons.settings_outlined, '当前表格设置'),
+                _buildMenuItem('columns', Icons.view_column_outlined, '管理字段'),
+                _buildMenuItem('style', Icons.palette_outlined, '表格样式'),
+                const PopupMenuDivider(),
+                _buildMenuItem(
+                    'import', Icons.upload_file_outlined, '导入模板 JSON'),
+                _buildMenuItem(
+                    'export', Icons.download_outlined, '导出模板 JSON'),
+                const PopupMenuDivider(),
+                _buildMenuItem(
+                    'delete_table', Icons.delete_outline, '删除当前表格',
+                    danger: true),
+                _buildMenuItem('reset', Icons.restore, '重置为默认模板'),
+              ],
+            )
+          else
+            IconButton(
+              tooltip: '记忆设置',
+              icon: const Icon(Icons.tune),
+              onPressed: _openMemorySettings,
+            ),
         ],
       ),
       body: Container(
@@ -99,44 +165,15 @@ class _MemoryManagementScreenState extends ConsumerState<MemoryManagementScreen>
           ),
         ),
         child: tables.isEmpty
-            ? _buildEmptyWorkspace()
+            ? _buildEmptyWorkspace(activeSessionName)
             : Column(
                 children: [
-                  AnimatedSize(
-                    duration: const Duration(milliseconds: 220),
-                    curve: Curves.easeOutCubic,
-                    child: ConstrainedBox(
-                      constraints:
-                          BoxConstraints(maxHeight: pluginSettingsMaxHeight),
-                      child: _buildPluginSettingsCard(settings),
-                    ),
-                  ),
-                  Material(
-                    color: const Color(0x33000000),
-                    child: TabBar(
-                      controller: _tabController,
-                      isScrollable: true,
-                      indicatorColor: const Color(0xFF24C3B5),
-                      labelColor: Colors.white,
-                      unselectedLabelColor: Colors.white54,
-                      dividerColor: Colors.white12,
-                      tabs: tables
-                          .map(
-                            (table) => Tab(
-                              text: table.name,
-                              icon: table.behavior.required
-                                  ? const Icon(Icons.star, size: 14)
-                                  : null,
-                            ),
-                          )
-                          .toList(),
-                    ),
-                  ),
+                  _buildTableChips(tables),
                   Expanded(
                     child: TabBarView(
                       controller: _tabController,
                       children: tables
-                          .map((table) => _buildTableWorkspace(table))
+                          .map((table) => _buildTableWorkspace(table, viewMode))
                           .toList(),
                     ),
                   ),
@@ -146,7 +183,82 @@ class _MemoryManagementScreenState extends ConsumerState<MemoryManagementScreen>
     );
   }
 
-  Widget _buildEmptyWorkspace() {
+  PopupMenuItem<String> _buildMenuItem(
+    String value,
+    IconData icon,
+    String label, {
+    bool danger = false,
+  }) {
+    final color = danger ? const Color(0xFFFF8A8A) : Colors.white;
+    return PopupMenuItem<String>(
+      value: value,
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(width: 10),
+          Text(label, style: TextStyle(color: color, fontSize: 13)),
+        ],
+      ),
+    );
+  }
+
+  /// 表格切换条：横向滚动的 chips，替代原先的 TabBar（去掉语义不明的 ★）。
+  Widget _buildTableChips(List<MemoryTable> tables) {
+    return Container(
+      color: const Color(0x33000000),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: tables.asMap().entries.map((entry) {
+            final index = entry.key;
+            final table = entry.value;
+            final selected = index == _activeTabIndex;
+            return Padding(
+              padding: EdgeInsets.only(
+                  right: index == tables.length - 1 ? 0 : 8),
+              child: ChoiceChip(
+                selected: selected,
+                label: Text(
+                  table.isEnabled ? table.name : '${table.name}（已停用）',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: selected ? const Color(0xFF04211D) : Colors.white70,
+                  ),
+                ),
+                onSelected: (_) {
+                  _tabController?.animateTo(index);
+                  if (_activeTabIndex != index) {
+                    setState(() => _activeTabIndex = index);
+                  }
+                },
+                selectedColor: const Color(0xFF24C3B5),
+                backgroundColor: const Color(0x22FFFFFF),
+                side: BorderSide(
+                  color: selected
+                      ? const Color(0xFF24C3B5)
+                      : const Color(0x33FFFFFF),
+                ),
+                showCheckmark: false,
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            );
+          }).toList(),
+        ),
+      ),
+    );
+  }
+
+  void _openMemorySettings() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const MemorySettingsScreen()),
+    );
+  }
+
+  Widget _buildEmptyWorkspace(String activeSessionName) {
+    final hasSession = activeSessionName.isNotEmpty;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
@@ -156,438 +268,35 @@ class _MemoryManagementScreenState extends ConsumerState<MemoryManagementScreen>
             const Icon(Icons.auto_awesome_motion_outlined,
                 size: 72, color: Colors.white24),
             const SizedBox(height: 16),
-            const Text(
-              '当前角色还没有可用记忆表格',
-              style: TextStyle(color: Colors.white70, fontSize: 16),
+            Text(
+              hasSession ? '「$activeSessionName」还没有记忆表格' : '未选择对话',
+              style: const TextStyle(color: Colors.white70, fontSize: 16),
+              textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 20),
-            FilledButton.icon(
-              onPressed: () =>
-                  ref.read(memoryProvider.notifier).resetToDefault(),
-              icon: const Icon(Icons.restore),
-              label: const Text('加载默认模板'),
+            const SizedBox(height: 8),
+            Text(
+              hasSession
+                  ? '记忆表格按对话独立保存，可在这里加载默认模板。'
+                  : '请先到聊天页选择一个角色或对话。',
+              style: const TextStyle(color: Colors.white38, fontSize: 12),
+              textAlign: TextAlign.center,
             ),
+            if (hasSession) ...[
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                onPressed: () =>
+                    ref.read(memoryProvider.notifier).resetToDefault(),
+                icon: const Icon(Icons.restore),
+                label: const Text('加载默认模板'),
+              ),
+            ],
           ],
         ),
       ),
     );
   }
 
-  Widget _buildPluginSettingsCard(MemoryPluginSettings settings) {
-    final pluginEnabled = settings.isPluginEnabled;
-    if (_isPluginSettingsCollapsed) {
-      return Container(
-        margin: const EdgeInsets.fromLTRB(12, 12, 12, 10),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: const Color(0x3324C3B5)),
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0x221CC8BA), Color(0x22103D57)],
-          ),
-        ),
-        child: Row(
-          children: [
-            const Icon(Icons.extension, size: 18, color: Color(0xFF78E8DD)),
-            const SizedBox(width: 8),
-            const Expanded(
-              child: Text(
-                '插件级设置 (已折叠)',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            IconButton(
-              tooltip: '展开插件级设置',
-              onPressed: () => setState(
-                () => _isPluginSettingsCollapsed = false,
-              ),
-              icon: const Icon(Icons.unfold_more, color: Colors.white70),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(12, 12, 12, 10),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0x3324C3B5)),
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0x221CC8BA), Color(0x22103D57)],
-        ),
-      ),
-      child: Scrollbar(
-        controller: _pluginSettingsController,
-        thumbVisibility: true,
-        interactive: true,
-        child: SingleChildScrollView(
-          controller: _pluginSettingsController,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.extension,
-                      size: 18, color: Color(0xFF78E8DD)),
-                  const SizedBox(width: 8),
-                  const Text(
-                    '插件级设置',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    tooltip: '折叠插件级设置',
-                    onPressed: () => setState(
-                      () => _isPluginSettingsCollapsed = true,
-                    ),
-                    icon: const Icon(Icons.unfold_less, color: Colors.white70),
-                  ),
-                  TextButton.icon(
-                    onPressed: _showMessageTemplateDialog,
-                    icon: const Icon(Icons.edit_note_outlined, size: 16),
-                    label: const Text('编辑提示词模板'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              SwitchListTile.adaptive(
-                contentPadding: EdgeInsets.zero,
-                title: const Text(
-                  '启用记忆插件总开关',
-                  style: TextStyle(color: Colors.white),
-                ),
-                subtitle: const Text(
-                  '关闭后将禁用记忆读取、记忆回写与聊天记录范围限制。',
-                  style: TextStyle(color: Colors.white60),
-                ),
-                value: settings.isPluginEnabled,
-                activeColor: const Color(0xFF24C3B5),
-                onChanged: (value) => ref
-                    .read(memoryPluginSettingsProvider.notifier)
-                    .patch(isPluginEnabled: value),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  FilterChip(
-                    selected: settings.isAiReadTable,
-                    label: const Text('AI 读取记忆表格'),
-                    onSelected: pluginEnabled
-                        ? (value) => ref
-                            .read(memoryPluginSettingsProvider.notifier)
-                            .patch(isAiReadTable: value)
-                        : null,
-                  ),
-                  FilterChip(
-                    selected: settings.isAiWriteTable,
-                    label: const Text('AI 回写记忆'),
-                    onSelected: pluginEnabled
-                        ? (value) => ref
-                            .read(memoryPluginSettingsProvider.notifier)
-                            .patch(isAiWriteTable: value)
-                        : null,
-                  ),
-                  FilterChip(
-                    selected: settings.confirmBeforeExecution,
-                    label: const Text('写入前确认'),
-                    onSelected: pluginEnabled
-                        ? (value) => ref
-                            .read(memoryPluginSettingsProvider.notifier)
-                            .patch(confirmBeforeExecution: value)
-                        : null,
-                  ),
-                  FilterChip(
-                    selected: settings.useTokenLimit,
-                    label: const Text('启用 Token 限制'),
-                    onSelected: pluginEnabled
-                        ? (value) => ref
-                            .read(memoryPluginSettingsProvider.notifier)
-                            .patch(useTokenLimit: value)
-                        : null,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: settings.injectionMode,
-                      decoration: _fieldDecoration('注入模式'),
-                      dropdownColor: const Color(0xFF16242C),
-                      items: const [
-                        DropdownMenuItem(
-                            value: 'deep_system', child: Text('deep_system')),
-                        DropdownMenuItem(
-                            value: 'system', child: Text('system')),
-                        DropdownMenuItem(value: 'none', child: Text('none')),
-                      ],
-                      onChanged: pluginEnabled
-                          ? (value) {
-                              if (value != null) {
-                                ref
-                                    .read(memoryPluginSettingsProvider.notifier)
-                                    .patch(injectionMode: value);
-                              }
-                            }
-                          : null,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '注入深度: ${settings.deep}',
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                        Slider(
-                          min: 0,
-                          max: 12,
-                          value:
-                              settings.deep.toDouble().clamp(0, 12).toDouble(),
-                          activeColor: const Color(0xFF24C3B5),
-                          inactiveColor: Colors.white24,
-                          onChanged: pluginEnabled
-                              ? (value) => ref
-                                  .read(memoryPluginSettingsProvider.notifier)
-                                  .patch(deep: value.round())
-                              : null,
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              _buildHistoryVisibilityCard(settings),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildHistoryVisibilityCard(MemoryPluginSettings settings) {
-    final canEditRange =
-        settings.isPluginEnabled && settings.isHistoryRangeLimitEnabled;
-    final keepLatestEnabled = settings.isKeepLatestEnabled;
-    final canEditKeepLatest = settings.isPluginEnabled && keepLatestEnabled;
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0x33FFFFFF)),
-        color: const Color(0x22000000),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            '聊天记录可见性',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 6),
-          SwitchListTile.adaptive(
-            contentPadding: EdgeInsets.zero,
-            title: const Text(
-              '启用聊天记录范围限制',
-              style: TextStyle(color: Colors.white),
-            ),
-            subtitle: const Text(
-              'AI 将仅看到指定范围内的历史记录。',
-              style: TextStyle(color: Colors.white60),
-            ),
-            value: settings.isHistoryRangeLimitEnabled,
-            activeColor: const Color(0xFF24C3B5),
-            onChanged: settings.isPluginEnabled
-                ? (value) => ref
-                    .read(memoryPluginSettingsProvider.notifier)
-                    .patch(isHistoryRangeLimitEnabled: value)
-                : null,
-          ),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Expanded(
-                child: TextFormField(
-                  key: ValueKey(
-                      'start_floor_${settings.historyRangeStartFloor}_${settings.isHistoryRangeLimitEnabled}_${settings.isPluginEnabled}'),
-                  initialValue: settings.historyRangeStartFloor.toString(),
-                  enabled: canEditRange,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(signed: true),
-                  inputFormatters: [
-                    FilteringTextInputFormatter.allow(RegExp(r'-?\d*')),
-                  ],
-                  style: const TextStyle(color: Colors.white),
-                  decoration: _fieldDecoration('起始楼层（从 #0 开始）'),
-                  onChanged: (value) {
-                    final parsed = int.tryParse(value.trim());
-                    if (parsed == null ||
-                        parsed == settings.historyRangeStartFloor) {
-                      return;
-                    }
-                    ref
-                        .read(memoryPluginSettingsProvider.notifier)
-                        .patch(historyRangeStartFloor: parsed);
-                  },
-                  onFieldSubmitted: (value) {
-                    if (value.trim().isNotEmpty &&
-                        int.tryParse(value.trim()) == null) {
-                      _showSnack('楼层必须是整数');
-                    }
-                  },
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: TextFormField(
-                  key: ValueKey(
-                      'end_floor_${settings.historyRangeEndFloor}_${settings.isHistoryRangeLimitEnabled}_${settings.isPluginEnabled}'),
-                  initialValue: settings.historyRangeEndFloor.toString(),
-                  enabled: canEditRange,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(signed: true),
-                  inputFormatters: [
-                    FilteringTextInputFormatter.allow(RegExp(r'-?\d*')),
-                  ],
-                  style: const TextStyle(color: Colors.white),
-                  decoration: _fieldDecoration('结束楼层 (-1 表示最新)'),
-                  onChanged: (value) {
-                    final parsed = int.tryParse(value.trim());
-                    if (parsed == null ||
-                        parsed == settings.historyRangeEndFloor) {
-                      return;
-                    }
-                    ref
-                        .read(memoryPluginSettingsProvider.notifier)
-                        .patch(historyRangeEndFloor: parsed);
-                  },
-                  onFieldSubmitted: (value) {
-                    if (value.trim().isNotEmpty &&
-                        int.tryParse(value.trim()) == null) {
-                      _showSnack('楼层必须是整数');
-                    }
-                  },
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            '聊天消息楼层从 #0 开始，#1、#2 递增，-1 表示最新。当前用户消息始终会被包含在可见范围内。',
-            style: TextStyle(color: Colors.white54, fontSize: 12),
-          ),
-          const SizedBox(height: 12),
-          const Text(
-            '保留最新的 N 条消息，并隐藏其余旧楼层',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 6),
-          SwitchListTile.adaptive(
-            contentPadding: EdgeInsets.zero,
-            title: const Text(
-              '启用保留楼层',
-              style: TextStyle(color: Colors.white),
-            ),
-            subtitle: const Text(
-              '开启后仅保留最近 N 条消息，其余楼层对 AI 不可见。',
-              style: TextStyle(color: Colors.white60),
-            ),
-            value: keepLatestEnabled,
-            activeColor: const Color(0xFF24C3B5),
-            onChanged: settings.isPluginEnabled
-                ? (value) => ref
-                    .read(memoryPluginSettingsProvider.notifier)
-                    .patch(isKeepLatestEnabled: value)
-                : null,
-          ),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Expanded(
-                child: TextFormField(
-                  key: ValueKey(
-                      'keep_latest_${settings.keepLatestFloors}_${settings.isKeepLatestEnabled}_${settings.isPluginEnabled}'),
-                  initialValue: settings.keepLatestFloors.toString(),
-                  enabled: canEditKeepLatest,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(signed: false),
-                  inputFormatters: [
-                    FilteringTextInputFormatter.allow(RegExp(r'\d*')),
-                  ],
-                  style: const TextStyle(color: Colors.white),
-                  decoration: _fieldDecoration('保留最新 N 条'),
-                  onChanged: (value) {
-                    final parsed = int.tryParse(value.trim());
-                    if (parsed == null || parsed <= 0) {
-                      return;
-                    }
-                    if (parsed == settings.keepLatestFloors) {
-                      return;
-                    }
-                    ref
-                        .read(memoryPluginSettingsProvider.notifier)
-                        .patch(keepLatestFloors: parsed);
-                  },
-                  onFieldSubmitted: (value) {
-                    final parsed = int.tryParse(value.trim());
-                    if (parsed == null || parsed <= 0) {
-                      _showSnack('楼层必须是正整数');
-                    }
-                  },
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: RichText(
-              text: TextSpan(
-                style: const TextStyle(color: Colors.white60, fontSize: 12),
-                children: [
-                  const TextSpan(text: '当前保留最近 '),
-                  TextSpan(
-                    text: '${settings.keepLatestFloors}',
-                    style: const TextStyle(
-                        color: Color(0xFFB8F4EE), fontWeight: FontWeight.w700),
-                  ),
-                  const TextSpan(text: ' 条聊天楼层。'),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTableWorkspace(MemoryTable table) {
+  Widget _buildTableWorkspace(MemoryTable table, String viewMode) {
     final query = (_searchTextByTable[table.id] ?? '').trim().toLowerCase();
     final filteredRows = table.rows.where((row) {
       if (query.isEmpty) {
@@ -600,128 +309,324 @@ class _MemoryManagementScreenState extends ConsumerState<MemoryManagementScreen>
     }).toList();
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
       child: Column(
         children: [
-          _buildTableToolbar(table, filteredRows.length),
+          _buildTableToolbar(table, filteredRows.length, viewMode),
           const SizedBox(height: 10),
-          Expanded(child: _buildTableGrid(table, filteredRows)),
+          Expanded(
+            child: viewMode == 'table'
+                ? _buildTableGrid(table, filteredRows)
+                : _buildCardList(table, filteredRows),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildTableToolbar(MemoryTable table, int filteredCount) {
-    final toolbarController = _horizontalController('toolbar_${table.id}');
-    return Scrollbar(
-      controller: toolbarController,
-      thumbVisibility: true,
-      trackVisibility: true,
-      interactive: true,
-      child: SingleChildScrollView(
-        controller: toolbarController,
-        scrollDirection: Axis.horizontal,
-        child: Row(
+  /// 移动端工具栏：两行、不横向滚动。
+  /// 第一行搜索占满宽度；第二行是统计 + 视图切换 + 新增。
+  /// 其余操作（表格设置 / 样式 / 字段 / 删除表格 / 导入导出）都在右上角 ⋮ 菜单里。
+  Widget _buildTableToolbar(
+    MemoryTable table,
+    int filteredCount,
+    String viewMode,
+  ) {
+    final query = _searchTextByTable[table.id] ?? '';
+    final stateLabel = table.isEnabled ? '已启用' : '已停用';
+    final statusText = table.rows.length == filteredCount
+        ? '${table.rows.length} 条 · $stateLabel'
+        : '$filteredCount / ${table.rows.length} 条 · $stateLabel';
+
+    return Column(
+      children: [
+        TextField(
+          style: const TextStyle(color: Colors.white, fontSize: 13),
+          decoration: _fieldDecoration('搜索记录（全列）').copyWith(
+            isDense: true,
+            prefixIcon: const Icon(Icons.search, size: 18),
+            suffixIcon: query.isNotEmpty
+                ? IconButton(
+                    onPressed: () =>
+                        setState(() => _searchTextByTable[table.id] = ''),
+                    icon: const Icon(Icons.clear, size: 16),
+                  )
+                : null,
+          ),
+          onChanged: (value) =>
+              setState(() => _searchTextByTable[table.id] = value),
+        ),
+        const SizedBox(height: 8),
+        Row(
           children: [
-            SizedBox(
-              width: 320,
-              child: TextField(
-                style: const TextStyle(color: Colors.white),
-                decoration: _fieldDecoration('搜索记录（全列）').copyWith(
-                  prefixIcon: const Icon(Icons.search, size: 18),
-                  suffixIcon: (_searchTextByTable[table.id] ?? '').isNotEmpty
-                      ? IconButton(
-                          onPressed: () =>
-                              setState(() => _searchTextByTable[table.id] = ''),
-                          icon: const Icon(Icons.clear, size: 16),
-                        )
-                      : null,
+            Expanded(
+              child: Text(
+                statusText,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Color(0xFF9FBCD1),
+                  fontSize: 12,
                 ),
-                onChanged: (value) =>
-                    setState(() => _searchTextByTable[table.id] = value),
               ),
             ),
-            const SizedBox(width: 10),
-            _buildStatusPill(
-              icon: Icons.format_list_bulleted,
-              label: '记录 ${table.rows.length}',
-            ),
-            const SizedBox(width: 10),
-            _buildStatusPill(
-              icon: Icons.filter_alt_outlined,
-              label: '筛选 $filteredCount',
-            ),
-            const SizedBox(width: 10),
-            _buildStatusPill(
-              icon: table.isEnabled ? Icons.check_circle : Icons.remove_circle,
-              label: table.isEnabled ? '已启用' : '已停用',
-              color: table.isEnabled
-                  ? const Color(0xFF4ED8A8)
-                  : Colors.orangeAccent,
-            ),
-            const SizedBox(width: 10),
-            OutlinedButton.icon(
-              onPressed: () => _showTableSettingsDialog(table),
-              icon: const Icon(Icons.tune, size: 16),
-              label: const Text('表格设置'),
-            ),
-            const SizedBox(width: 10),
-            OutlinedButton.icon(
-              onPressed: () => _showTableStyleDialog(table),
-              icon: const Icon(Icons.palette_outlined, size: 16),
-              label: const Text('样式'),
-            ),
-            const SizedBox(width: 10),
-            OutlinedButton.icon(
-              onPressed: () => _showColumnManagerDialog(table),
-              icon: const Icon(Icons.view_column, size: 16),
-              label: const Text('字段'),
-            ),
-            const SizedBox(width: 10),
-            OutlinedButton.icon(
-              style: OutlinedButton.styleFrom(
-                side: BorderSide(color: Colors.redAccent.withOpacity(0.4)),
-                foregroundColor: Colors.redAccent,
-              ),
-              onPressed: () => _confirmDeleteTable(table),
-              icon: const Icon(Icons.delete_outline, size: 16),
-              label: const Text('删除表格'),
-            ),
-            const SizedBox(width: 10),
+            _buildViewModeToggle(viewMode),
+            const SizedBox(width: 8),
             FilledButton.icon(
               onPressed: () => _showRowEditorDialog(table),
-              icon: const Icon(Icons.add),
-              label: const Text('新增记录'),
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('新增'),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF24C3B5),
+                foregroundColor: const Color(0xFF04211D),
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                minimumSize: const Size(0, 36),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
             ),
           ],
+        ),
+      ],
+    );
+  }
+
+  /// 卡片 / 表格 视图切换开关，状态持久化在 pluginSettingsProvider。
+  Widget _buildViewModeToggle(String viewMode) {
+    final isCard = viewMode != 'table';
+    return SegmentedButton<bool>(
+      segments: const [
+        ButtonSegment(
+          value: true,
+          icon: Icon(Icons.view_agenda_outlined, size: 16),
+          tooltip: '卡片列表',
+        ),
+        ButtonSegment(
+          value: false,
+          icon: Icon(Icons.table_chart_outlined, size: 16),
+          tooltip: '表格',
+        ),
+      ],
+      selected: {isCard},
+      showSelectedIcon: false,
+      onSelectionChanged: (selection) {
+        ref
+            .read(pluginSettingsProvider.notifier)
+            .setString(_viewModeKey, selection.first ? 'card' : 'table');
+      },
+      style: ButtonStyle(
+        visualDensity: VisualDensity.compact,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        padding: const WidgetStatePropertyAll(
+          EdgeInsets.symmetric(horizontal: 8),
+        ),
+        backgroundColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return const Color(0xFF24C3B5);
+          }
+          return const Color(0x22FFFFFF);
+        }),
+        foregroundColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return const Color(0xFF04211D);
+          }
+          return Colors.white70;
+        }),
+        side: const WidgetStatePropertyAll(
+          BorderSide(color: Color(0x33FFFFFF)),
         ),
       ),
     );
   }
 
-  Widget _buildStatusPill({
-    required IconData icon,
-    required String label,
-    Color color = const Color(0xFF9FBCD1),
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: const Color(0x33FFFFFF)),
-        color: const Color(0x22000000),
-      ),
-      child: Row(
+  /// 卡片列表视图：每条记录一张卡，字段竖排，操作图标固定在卡内。
+  /// 空值字段灰显而不隐藏，保持字段结构可预期。
+  Widget _buildCardList(MemoryTable table, List<MemoryRow> rows) {
+    if (rows.isEmpty) {
+      return _buildEmptyRows(table);
+    }
+
+    final style = table.style;
+    final accentColor = _hexColor(style.accentColor, const Color(0xFF24C3B5));
+    final rowColor = _hexColor(style.rowColor, const Color(0xFF0E151A));
+    final primaryColumn = table.columns.isNotEmpty ? table.columns.first : null;
+
+    return ListView.separated(
+      padding: EdgeInsets.zero,
+      itemCount: rows.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      itemBuilder: (context, index) {
+        final row = rows[index];
+        final title = primaryColumn == null
+            ? ''
+            : (row.data[primaryColumn.key] ?? '').toString().trim();
+        final others = table.columns
+            .where((column) => column.key != primaryColumn?.key)
+            .toList();
+
+        return Container(
+          decoration: BoxDecoration(
+            color: row.isEnabled
+                ? rowColor.withOpacity(0.85)
+                : const Color(0x66000000),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color:
+                  row.isEnabled ? accentColor.withOpacity(0.35) : Colors.white12,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 8, 4, 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title.isEmpty ? '（未命名记录）' : title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color:
+                              row.isEnabled ? Colors.white : Colors.white38,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: row.isEnabled ? '停用' : '启用',
+                      visualDensity: VisualDensity.compact,
+                      icon: Icon(
+                        row.isEnabled
+                            ? Icons.visibility
+                            : Icons.visibility_off,
+                        size: 18,
+                        color: row.isEnabled
+                            ? const Color(0xFF8AEBC6)
+                            : Colors.white54,
+                      ),
+                      onPressed: () => ref
+                          .read(memoryProvider.notifier)
+                          .toggleRow(table.id, row.id, !row.isEnabled),
+                    ),
+                    IconButton(
+                      tooltip: '编辑',
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.edit,
+                          size: 18, color: Color(0xFF79BEFF)),
+                      onPressed: () => _showRowEditorDialog(table, row: row),
+                    ),
+                    IconButton(
+                      tooltip: '删除',
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.delete_outline,
+                          size: 18, color: Color(0xFFFF8A8A)),
+                      onPressed: () =>
+                          _confirmDeleteRow(table, row, title: title),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1, color: Color(0x1AFFFFFF)),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: others.map((column) {
+                    final raw = (row.data[column.key] ?? '').toString().trim();
+                    final isEmpty = raw.isEmpty;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: RichText(
+                        text: TextSpan(
+                          style: const TextStyle(fontSize: 12, height: 1.5),
+                          children: [
+                            TextSpan(
+                              text: '${column.label}  ',
+                              style: const TextStyle(
+                                color: Color(0xFF7F93A6),
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            TextSpan(
+                              text: isEmpty ? '未填写' : raw,
+                              style: TextStyle(
+                                color: isEmpty
+                                    ? const Color(0xFF5A6B7A)
+                                    : Colors.white.withOpacity(
+                                        row.isEnabled ? 0.92 : 0.4,
+                                      ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildEmptyRows(MemoryTable table) {
+    return Center(
+      child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: color),
-          const SizedBox(width: 6),
-          Text(label, style: TextStyle(color: color, fontSize: 12)),
+          const Icon(Icons.table_rows_outlined,
+              size: 52, color: Colors.white24),
+          const SizedBox(height: 10),
+          const Text('没有符合条件的记录',
+              style: TextStyle(color: Colors.white54)),
+          const SizedBox(height: 14),
+          FilledButton.icon(
+            onPressed: () => _showRowEditorDialog(table),
+            icon: const Icon(Icons.add),
+            label: const Text('添加第一条'),
+          ),
         ],
       ),
     );
   }
 
+  /// 卡片视图的删除需要二次确认，避免手机上误触丢数据。
+  Future<void> _confirmDeleteRow(
+    MemoryTable table,
+    MemoryRow row, {
+    String title = '',
+  }) async {
+    final label = title.trim().isEmpty ? '这条记录' : '「${title.trim()}」';
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF132028),
+        title: const Text('删除记录', style: TextStyle(color: Colors.white)),
+        content: Text(
+          '确定删除 $label 吗？该操作不可撤销。',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) {
+      return;
+    }
+    ref.read(memoryProvider.notifier).deleteRow(table.id, row.id);
+  }
   Widget _buildTableGrid(MemoryTable table, List<MemoryRow> rows) {
     final style = table.style;
     final accentColor = _hexColor(style.accentColor, const Color(0xFF24C3B5));
@@ -731,23 +636,7 @@ class _MemoryManagementScreenState extends ConsumerState<MemoryManagementScreen>
         _hexColor(style.alternateRowColor, const Color(0xFF111E24));
 
     if (rows.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.table_rows_outlined,
-                size: 52, color: Colors.white24),
-            const SizedBox(height: 10),
-            const Text('没有符合条件的记录', style: TextStyle(color: Colors.white54)),
-            const SizedBox(height: 14),
-            FilledButton.icon(
-              onPressed: () => _showRowEditorDialog(table),
-              icon: const Icon(Icons.add),
-              label: const Text('添加第一条'),
-            ),
-          ],
-        ),
-      );
+      return _buildEmptyRows(table);
     }
 
     final verticalController = _verticalController(table.id);
@@ -879,9 +768,16 @@ class _MemoryManagementScreenState extends ConsumerState<MemoryManagementScreen>
                                   tooltip: '删除',
                                   icon: const Icon(Icons.delete_outline,
                                       size: 18, color: Color(0xFFFF8A8A)),
-                                  onPressed: () => ref
-                                      .read(memoryProvider.notifier)
-                                      .deleteRow(table.id, row.id),
+                                  onPressed: () => _confirmDeleteRow(
+                                    table,
+                                    row,
+                                    title: (table.columns.isEmpty
+                                            ? ''
+                                            : (row.data[table.columns.first.key] ??
+                                                    '')
+                                                .toString())
+                                        .trim(),
+                                  ),
                                 ),
                               ],
                             ),
@@ -1595,41 +1491,6 @@ class _MemoryManagementScreenState extends ConsumerState<MemoryManagementScreen>
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  Future<void> _showMessageTemplateDialog() async {
-    final settings = ref.read(memoryPluginSettingsProvider);
-    final ctrl = TextEditingController(text: settings.messageTemplate);
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF132028),
-        title: const Text('编辑 message_template',
-            style: TextStyle(color: Colors.white)),
-        content: SizedBox(
-          width: 720,
-          child: TextField(
-            controller: ctrl,
-            maxLines: 18,
-            style: const TextStyle(color: Colors.white),
-            decoration: _fieldDecoration('用于注入给模型的记忆提示词模板'),
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(
-            onPressed: () {
-              ref
-                  .read(memoryPluginSettingsProvider.notifier)
-                  .patch(messageTemplate: ctrl.text);
-              Navigator.pop(ctx);
-            },
-            child: const Text('保存'),
-          ),
-        ],
       ),
     );
   }

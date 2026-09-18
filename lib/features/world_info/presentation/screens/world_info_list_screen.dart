@@ -4,6 +4,7 @@ import 'package:uuid/uuid.dart';
 import '../../../../core/utils/file_helper.dart';
 import '../../data/world_info_provider.dart';
 import '../../domain/models/world_info.dart';
+import '../widgets/world_info_activation_settings.dart';
 
 class WorldInfoListScreen extends ConsumerWidget {
   const WorldInfoListScreen({super.key});
@@ -70,6 +71,8 @@ class WorldInfoListScreen extends ConsumerWidget {
         padding: const EdgeInsets.all(16),
         children: [
           _buildGlobalActiveSection(context, ref, list, activeIds),
+          const SizedBox(height: 16),
+          const WorldInfoActivationSettingsPanel(),
           const SizedBox(height: 24),
           _buildAllSectionHeader(list.length),
           const SizedBox(height: 8),

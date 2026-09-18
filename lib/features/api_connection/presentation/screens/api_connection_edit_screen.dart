@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../data/api_connection_provider.dart';
 import '../../domain/models/api_connection.dart';
+import '../../../chat/data/transport/local_chat_template.dart';
 
 class ApiConnectionEditScreen extends ConsumerStatefulWidget {
   final ApiConnection? connection;
@@ -29,8 +30,33 @@ class _ApiConnectionEditScreenState extends ConsumerState<ApiConnectionEditScree
   // Local optimization settings
   double _nThreads = 4;
   double _nBatch = 512;
-  double _nContext = 2048;
+  double _nContext = 8192;
   bool _flashAttn = false;
+  LocalChatTemplate _chatTemplate = LocalChatTemplate.auto;
+
+  // Remote settings
+  final TextEditingController _contextSizeController = TextEditingController();
+  bool _includeUsage = true;
+
+  static int? _readInt(dynamic raw) {
+    if (raw is num) {
+      return raw.toInt();
+    }
+    if (raw is String) {
+      return int.tryParse(raw.trim());
+    }
+    return null;
+  }
+
+  static double _readDouble(dynamic raw, double fallback) {
+    if (raw is num) {
+      return raw.toDouble();
+    }
+    if (raw is String) {
+      return double.tryParse(raw.trim()) ?? fallback;
+    }
+    return fallback;
+  }
 
   @override
   void initState() {
@@ -50,15 +76,27 @@ class _ApiConnectionEditScreenState extends ConsumerState<ApiConnectionEditScree
       }
       
       // Load params
-      if (c.parameters.containsKey('n_threads')) _nThreads = (c.parameters['n_threads'] as num).toDouble();
-      if (c.parameters.containsKey('n_batch')) _nBatch = (c.parameters['n_batch'] as num).toDouble();
-      if (c.parameters.containsKey('context_size')) _nContext = (c.parameters['context_size'] as num).toDouble();
-      if (c.parameters.containsKey('flash_attn')) _flashAttn = c.parameters['flash_attn'] as bool;
+      _nThreads = _readDouble(c.parameters['n_threads'], 4);
+      _nBatch = _readDouble(c.parameters['n_batch'], 512);
+      // 默认 8192：2048 会让世界书预算（25%）只剩 512 token，绝大多数
+      // 角色卡内嵌世界书都挤不进去，表现为「设定没读取」。
+      _nContext = _readDouble(c.parameters['context_size'], 8192);
+      _flashAttn = c.parameters['flash_attn'] == true;
+      _includeUsage = c.parameters['include_usage'] != false;
+      _chatTemplate = LocalChatTemplate.fromId(
+        c.parameters['chat_template']?.toString(),
+      );
+
+      final remoteContextSize = _readInt(c.parameters['context_size']);
+      if (remoteContextSize != null && remoteContextSize > 0) {
+        _contextSizeController.text = remoteContextSize.toString();
+      }
     }
   }
 
   @override
   void dispose() {
+    _contextSizeController.dispose();
     _nameController.dispose();
     _baseUrlController.dispose();
     _apiKeyController.dispose();
@@ -189,12 +227,31 @@ class _ApiConnectionEditScreenState extends ConsumerState<ApiConnectionEditScree
       return;
     }
 
-    final Map<String, dynamic> params = {};
+    // 合并而非覆盖：编辑连接时不再丢掉已有参数。
+    final Map<String, dynamic> params = Map<String, dynamic>.from(
+      widget.connection?.parameters ?? const <String, dynamic>{},
+    );
+
     if (_selectedPlatform == ApiPlatform.local) {
       params['n_threads'] = _nThreads;
       params['n_batch'] = _nBatch;
       params['context_size'] = _nContext;
       params['flash_attn'] = _flashAttn;
+      params['chat_template'] = _chatTemplate.id;
+      params.remove('include_usage');
+    } else {
+      params.remove('n_threads');
+      params.remove('n_batch');
+      params.remove('flash_attn');
+      params.remove('chat_template');
+
+      final contextSize = int.tryParse(_contextSizeController.text.trim());
+      if (contextSize != null && contextSize > 0) {
+        params['context_size'] = contextSize;
+      } else {
+        params.remove('context_size');
+      }
+      params['include_usage'] = _includeUsage;
     }
 
     final newConnection = widget.connection?.copyWith(
@@ -205,23 +262,18 @@ class _ApiConnectionEditScreenState extends ConsumerState<ApiConnectionEditScree
       model: _modelController.text,
       localModelPath: _localModelPath,
       parameters: params,
-    ) ?? ApiConnection.create(
-      name: _nameController.text,
-      platform: _selectedPlatform.label,
-      baseUrl: _baseUrlController.text,
-      apiKey: _apiKeyController.text,
-      model: _modelController.text,
-      localModelPath: _localModelPath,
-    );
+    ) ??
+        ApiConnection.create(
+          name: _nameController.text,
+          platform: _selectedPlatform.label,
+          baseUrl: _baseUrlController.text,
+          apiKey: _apiKeyController.text,
+          model: _modelController.text,
+          localModelPath: _localModelPath,
+        ).copyWith(parameters: params);
 
-    if (widget.connection == null) {
-       // Re-create with params since factory doesn't take params
-       final c = newConnection.copyWith(parameters: params);
-       ref.read(apiConnectionsProvider.notifier).saveConnection(c);
-    } else {
-       ref.read(apiConnectionsProvider.notifier).saveConnection(newConnection);
-    }
-    
+    ref.read(apiConnectionsProvider.notifier).saveConnection(newConnection);
+
     Navigator.pop(context);
   }
 
@@ -342,6 +394,44 @@ class _ApiConnectionEditScreenState extends ConsumerState<ApiConnectionEditScree
                            value: _flashAttn,
                            onChanged: (v) => setState(() => _flashAttn = v),
                          ),
+
+                         const Divider(color: Colors.white24),
+
+                         // Chat Template
+                         const Text('对话模板 (Chat Template)', style: TextStyle(color: Colors.white)),
+                         const SizedBox(height: 6),
+                         Container(
+                           padding: const EdgeInsets.symmetric(horizontal: 10),
+                           decoration: BoxDecoration(
+                             border: Border.all(color: Colors.white24),
+                             borderRadius: BorderRadius.circular(6),
+                           ),
+                           child: DropdownButton<LocalChatTemplate>(
+                             value: _chatTemplate,
+                             isExpanded: true,
+                             dropdownColor: const Color(0xFF222130),
+                             underline: const SizedBox.shrink(),
+                             items: LocalChatTemplate.values
+                                 .map((template) => DropdownMenuItem(
+                                       value: template,
+                                       child: Text(
+                                         template.label,
+                                         style: const TextStyle(
+                                             color: Colors.white, fontSize: 13),
+                                       ),
+                                     ))
+                                 .toList(),
+                             onChanged: (value) => setState(() =>
+                                 _chatTemplate =
+                                     value ?? LocalChatTemplate.auto),
+                           ),
+                         ),
+                         const SizedBox(height: 6),
+                         const Text(
+                           '自动识别会按模型文件名推断（Qwen / Llama 3 / Gemma / Mistral 等），'
+                           '选错会明显影响输出质量。',
+                           style: TextStyle(color: Colors.grey, fontSize: 12),
+                         ),
                        ],
                      ),
                    ),
@@ -378,6 +468,24 @@ class _ApiConnectionEditScreenState extends ConsumerState<ApiConnectionEditScree
                         : const Text('测试/获取'),
                     ),
                   ],
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _contextSizeController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: '上下文窗口 (Context Size，可选)',
+                    hintText: '留空则按协议默认：OpenAI 兼容 8192 / Claude 200000 / Gemini 32768',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('回读 token 用量 (stream_options.include_usage)'),
+                  subtitle: const Text('若服务端不识别该字段会自动回退重试一次'),
+                  value: _includeUsage,
+                  onChanged: (v) => setState(() => _includeUsage = v),
                 ),
               ],
               

@@ -8,6 +8,7 @@ import '../../../../features/api_connection/presentation/screens/api_connection_
 
 import '../../../../features/presets/data/preset_provider.dart';
 import '../../../../features/presets/presentation/screens/preset_list_screen.dart';
+import '../../../../features/presets/presentation/screens/preset_edit_screen.dart';
 import '../../../../features/world_info/data/world_info_provider.dart';
 import '../../../../features/world_info/presentation/screens/world_info_list_screen.dart';
 import '../../../../features/regex/data/regex_provider.dart';
@@ -74,21 +75,25 @@ class CharacterSettingsDrawer extends ConsumerWidget {
                             MaterialPageRoute(
                                 builder: (_) => const PersonaListScreen()));
                       }),
-                      // Advanced generation settings shortcuts
-                      ListTile(
-                        title: const Text('回复长度限制',
-                            style: TextStyle(color: Colors.white70)),
-                        subtitle: Slider(
-                          value: (activePreset?.maxTokens ?? 200).toDouble(),
-                          min: 50,
-                          max: 4096,
-                          divisions: 40,
-                          label: '${activePreset?.maxTokens ?? 200}',
-                          onChanged: (val) {
-                            // This should ideally update a temporary state or the preset directly if we want
-                            // For now, just visual as we don't have direct preset editing here
-                          },
-                        ),
+                      // 回复长度由预设的 `max_tokens` 决定。
+                      // 原先这里放了一个 onChanged 为空的 Slider，既拖不动、
+                      // 没预设时又恒显示 200，很容易让人误以为回复被限死在 200。
+                      // 改为只读展示 + 直达预设参数页。
+                      _buildSettingsTile(
+                        Icons.straighten,
+                        '回复长度限制 (Max Tokens)',
+                        activePreset == null
+                            ? '未选择预设，点击前往设置'
+                            : '${activePreset.maxTokens} tokens · ${activePreset.name}',
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  PresetEditScreen(preset: activePreset),
+                            ),
+                          );
+                        },
                       ),
                     ],
                   ),

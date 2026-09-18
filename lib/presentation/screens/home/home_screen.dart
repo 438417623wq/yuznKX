@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../features/chat/presentation/screens/chat_screen.dart';
-import '../memory/memory_screen.dart';
+import '../../../features/memory/presentation/screens/memory_management_screen.dart';
 import '../settings/settings_screen.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -16,7 +16,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   final List<Widget> _screens = const [
     ChatScreen(),
-    MemoryScreen(),
+    MemoryManagementScreen(),
     SettingsScreen(),
   ];
 

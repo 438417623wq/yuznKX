@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
+import '../../memory/data/memory_provider.dart';
 import '../domain/models/session.dart';
 import '../domain/models/chat_message.dart';
 
@@ -130,9 +131,37 @@ class SessionNotifier extends StateNotifier<List<Session>> {
     _upsertInState(newSession);
   }
 
+  /// 删除一条会话，并**级联清理**它独占的所有数据。
+  ///
+  /// 清理范围：
+  /// - `sessions` box 本身
+  /// - 会话级记忆（`memory_tables_v3` / `memory_plugin_settings_v3`）
+  /// - 会话级变量（`settings` box 的 `chat_variables[sessionId]`）
+  ///
+  /// 不清理的后果不只是留下孤儿数据：sessionId 一旦被复用（导入备份、
+  /// 恢复数据等场景），旧记忆会串到新会话上。
+  ///
+  /// 删除「当前活跃会话」后不需要在这里做切换 —— `SessionManager._reconcile`
+  /// 监听了 `sessionProvider`，会自动切到该角色的下一条会话（没有则新建一条）。
   Future<void> deleteSession(String sessionId) async {
     await _box.delete(sessionId);
     state = state.where((s) => s.id != sessionId).toList();
+
+    // 会话级记忆
+    await purgeSessionScopedMemory(sessionId);
+
+    // 会话级变量
+    try {
+      final settings = await Hive.openBox('settings');
+      final rawChatVariables = settings.get('chat_variables');
+      if (rawChatVariables is Map && rawChatVariables.containsKey(sessionId)) {
+        final next = Map<String, dynamic>.from(rawChatVariables)
+          ..remove(sessionId);
+        await settings.put('chat_variables', next);
+      }
+    } catch (error) {
+      print('Failed to clean up chat variables for $sessionId: $error');
+    }
   }
 
   void _upsertInState(Session session) {

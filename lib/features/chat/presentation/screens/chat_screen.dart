@@ -10,6 +10,7 @@ import '../../data/tts_service.dart';
 import '../../data/speech_provider.dart';
 import '../../domain/models/session.dart'; // Import Session
 import '../widgets/session_list_drawer.dart';
+import '../widgets/session_history_sheet.dart';
 import '../../../settings/presentation/widgets/character_settings_drawer.dart';
 import '../widgets/chat_bubble.dart';
 import 'voice_call_screen.dart';
@@ -64,6 +65,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Initialize SessionManager
     ref.watch(sessionManagerProvider);
 
+    // 世界书 Token 预算溢出提示（仅在激活设置里打开「溢出警报」时触发）。
+    ref.listen<String?>(worldInfoOverflowNoticeProvider, (previous, next) {
+      if (next == null || !mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(next),
+          duration: const Duration(seconds: 5),
+        ),
+      );
+      ref.read(worldInfoOverflowNoticeProvider.notifier).state = null;
+    });
+
     final sessionId = ref.watch(activeSessionIdProvider);
     final activeCharacter = ref.watch(activeCharacterProvider);
     final themeSettings = ref.watch(themeSettingsProvider);
@@ -78,6 +93,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         activeSession = sessions.firstWhere((s) => s.id == sessionId);
       } catch (_) {}
     }
+
+    // 当前对话名：AppBar 副标题展示用，同时用于判断是否显示会话入口。
+    final activeSessionName = activeSession?.name ?? '';
 
     if (sessionId == null && activeCharacter == null) {
        // If both are null, it's likely initial load or no data. 
@@ -96,30 +114,65 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ? Colors.black.withOpacity(0.5) 
             : themeSettings.uiBackgroundColor,
         elevation: themeSettings.backgroundImagePath != null ? 0 : 4,
-        title: Row(
-          children: [
-            if (activeSession?.isGroup == true)
-              const Padding(
-                padding: EdgeInsets.only(right: 8.0),
-                child: Icon(Icons.groups, size: 28),
-              )
-            else
-              CircleAvatar(
-                backgroundImage: (activeCharacter?.avatarPath != null && activeCharacter!.avatarPath.isNotEmpty)
-                    ? FileImage(File(activeCharacter.avatarPath)) as ImageProvider
-                    : const NetworkImage('https://via.placeholder.com/150'),
-                radius: 16,
+        title: InkWell(
+          onTap: activeCharacter == null
+              ? null
+              : () => showSessionHistorySheet(context),
+          borderRadius: BorderRadius.circular(8),
+          child: Row(
+            children: [
+              if (activeSession?.isGroup == true)
+                const Padding(
+                  padding: EdgeInsets.only(right: 8.0),
+                  child: Icon(Icons.groups, size: 28),
+                )
+              else
+                CircleAvatar(
+                  backgroundImage: (activeCharacter?.avatarPath != null &&
+                          activeCharacter!.avatarPath.isNotEmpty)
+                      ? FileImage(File(activeCharacter.avatarPath))
+                          as ImageProvider
+                      : const NetworkImage('https://via.placeholder.com/150'),
+                  radius: 16,
+                ),
+              const SizedBox(width: 10),
+              Flexible(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      activeCharacter?.name ?? "未选择角色",
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    // 副标题显示当前对话名 —— 同一角色的多条对话靠它区分，
+                    // 也是「点这里切换对话」的视觉提示。
+                    if (activeSessionName.isNotEmpty)
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              activeSessionName,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Colors.white60,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 3),
+                          const Icon(
+                            Icons.expand_more,
+                            size: 13,
+                            color: Colors.white60,
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
               ),
-            const SizedBox(width: 10),
-            Flexible(
-              child: Text(
-                activeSession?.isGroup == true 
-                    ? (activeSession?.name ?? "群聊") 
-                    : (activeCharacter?.name ?? "未选择角色"),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
         actions: [
           if (activeSession?.isGroup == true)
