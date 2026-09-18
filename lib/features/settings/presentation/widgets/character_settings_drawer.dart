@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:io';
-import 'package:file_picker/file_picker.dart';
 import '../../../../features/chat/data/chat_provider.dart';
 import '../../../../features/chat/data/session_provider.dart';
 import '../../../../features/api_connection/data/api_connection_provider.dart';
@@ -17,7 +16,6 @@ import '../../../../features/character/data/character_provider.dart';
 import '../../../../features/character/presentation/screens/character_edit_screen.dart';
 import '../../../../features/character/presentation/screens/character_list_screen.dart';
 import '../../../../features/character/domain/models/character.dart';
-import '../../data/theme_provider.dart';
 import '../../../user/data/persona_provider.dart';
 import '../../../../features/user/presentation/screens/persona_list_screen.dart';
 import '../../domain/plugin_settings_provider.dart';
@@ -36,7 +34,6 @@ class CharacterSettingsDrawer extends ConsumerWidget {
     final activeWorldInfoIds = ref.watch(activeWorldInfoIdsProvider);
     final activeRegexIds = ref.watch(activeRegexScriptIdsProvider);
     final activeCharacter = ref.watch(activeCharacterProvider);
-    final themeSettings = ref.watch(themeSettingsProvider);
     final currentPersona = ref.watch(personaProvider);
     return Drawer(
       width: MediaQuery.of(context).size.width * 0.85,
@@ -98,161 +95,8 @@ class CharacterSettingsDrawer extends ConsumerWidget {
 
                   const Divider(color: Colors.white10),
 
-                  // --- 2. Appearance & Theme ---
-                  ExpansionTile(
-                    title: const Text('外观与主题',
-                        style: TextStyle(
-                            color: Colors.white, fontWeight: FontWeight.bold)),
-                    leading: const Icon(Icons.color_lens_outlined,
-                        color: Colors.pinkAccent),
-                    collapsedIconColor: Colors.white54,
-                    iconColor: Colors.pinkAccent,
-                    initiallyExpanded: true,
-                    children: [
-                      // Background Image
-                      ListTile(
-                        title: const Text('背景图片',
-                            style: TextStyle(color: Colors.white)),
-                        trailing: themeSettings.backgroundImagePath != null
-                            ? IconButton(
-                                icon:
-                                    const Icon(Icons.close, color: Colors.red),
-                                onPressed: () => ref
-                                    .read(themeSettingsProvider.notifier)
-                                    .updateBackgroundImage(null),
-                              )
-                            : const Icon(Icons.add_photo_alternate,
-                                color: Colors.white54),
-                        subtitle: Text(
-                            themeSettings.backgroundImagePath != null
-                                ? '已设置'
-                                : '点击选择图片',
-                            style: const TextStyle(color: Colors.white38)),
-                        onTap: () async {
-                          FilePickerResult? result = await FilePicker.platform
-                              .pickFiles(type: FileType.image);
-                          if (result != null &&
-                              result.files.single.path != null) {
-                            ref
-                                .read(themeSettingsProvider.notifier)
-                                .updateBackgroundImage(
-                                    result.files.single.path!);
-                          }
-                        },
-                      ),
-                      // Blur Slider
-                      if (themeSettings.backgroundImagePath != null)
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Padding(
-                              padding: EdgeInsets.only(left: 16, top: 8),
-                              child: Text('背景模糊',
-                                  style: TextStyle(
-                                      color: Colors.white70, fontSize: 12)),
-                            ),
-                            Slider(
-                              value: themeSettings.backgroundBlur,
-                              min: 0,
-                              max: 10,
-                              onChanged: (val) => ref
-                                  .read(themeSettingsProvider.notifier)
-                                  .updateBlur(val),
-                            ),
-                            const Padding(
-                              padding: EdgeInsets.only(left: 16, top: 0),
-                              child: Text('背景遮罩浓度',
-                                  style: TextStyle(
-                                      color: Colors.white70, fontSize: 12)),
-                            ),
-                            Slider(
-                              value: themeSettings.backgroundOpacity,
-                              min: 0.0,
-                              max: 0.9,
-                              onChanged: (val) => ref
-                                  .read(themeSettingsProvider.notifier)
-                                  .updateOpacity(val),
-                            ),
-                          ],
-                        ),
-
-                      // Bubble Colors
-                      const Padding(
-                        padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-                        child: Text('气泡颜色 (用户 / AI)',
-                            style: TextStyle(color: Colors.white70)),
-                      ),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          _buildColorPicker(context, ref, 'user_color',
-                              themeSettings.userBubbleColor),
-                          const Icon(Icons.swap_horiz, color: Colors.white24),
-                          _buildColorPicker(context, ref, 'ai_color',
-                              themeSettings.aiBubbleColor),
-                        ],
-                      ),
-
-                      const Divider(color: Colors.white10),
-                      const Padding(
-                        padding: EdgeInsets.fromLTRB(16, 8, 16, 8),
-                        child: Text('自定义配色',
-                            style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold)),
-                      ),
-                      _buildDetailedColorPicker(context, ref, '主要文本',
-                          themeSettings.mainTextColor, 'main_text_color'),
-                      _buildDetailedColorPicker(context, ref, '斜体文本',
-                          themeSettings.italicTextColor, 'italic_text_color'),
-                      _buildDetailedColorPicker(
-                          context,
-                          ref,
-                          '下划线文本',
-                          themeSettings.underlineTextColor,
-                          'underline_text_color'),
-                      _buildDetailedColorPicker(context, ref, '引用文本',
-                          themeSettings.quoteTextColor, 'quote_text_color'),
-                      _buildDetailedColorPicker(context, ref, '阴影颜色',
-                          themeSettings.shadowColor, 'shadow_color'),
-                      _buildDetailedColorPicker(context, ref, '聊天背景',
-                          themeSettings.chatBackgroundColor, 'chat_bg_color'),
-                      _buildDetailedColorPicker(context, ref, 'UI 背景',
-                          themeSettings.uiBackgroundColor, 'ui_bg_color'),
-                      _buildDetailedColorPicker(context, ref, 'UI 边框',
-                          themeSettings.uiBorderColor, 'ui_border_color'),
-                      _buildDetailedColorPicker(context, ref, '用户消息模糊色调',
-                          themeSettings.userMessageBlurTint, 'user_blur_tint'),
-                      _buildDetailedColorPicker(context, ref, 'AI 消息模糊色调',
-                          themeSettings.aiMessageBlurTint, 'ai_blur_tint'),
-                      _buildDetailedColorPicker(context, ref, '旁白颜色',
-                          themeSettings.narrationColor, 'narration_color'),
-
-                      const Divider(color: Colors.white10),
-                      _buildPatternSettings(context, ref, themeSettings),
-
-                      // Font Scale
-                      const Padding(
-                        padding: EdgeInsets.fromLTRB(16, 16, 16, 0),
-                        child: Text('字体大小',
-                            style: TextStyle(color: Colors.white70)),
-                      ),
-                      Slider(
-                        value: themeSettings.fontSizeScale,
-                        min: 0.8,
-                        max: 1.5,
-                        divisions: 7,
-                        label: '${themeSettings.fontSizeScale}x',
-                        onChanged: (val) => ref
-                            .read(themeSettingsProvider.notifier)
-                            .updateFontSize(val),
-                      ),
-                    ],
-                  ),
-
-                  const Divider(color: Colors.white10),
-
-                  // --- 3. Model & API ---
+                  // --- 2. Model & API ---
+                  // 说明：「外观与主题」已整体迁移至「设置 → 高级 → 外观与主题」。
                   ExpansionTile(
                     title: const Text('模型与API',
                         style: TextStyle(
@@ -443,266 +287,6 @@ class CharacterSettingsDrawer extends ConsumerWidget {
             fontSize: 11,
             fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPatternSettings(
-      BuildContext context, WidgetRef ref, ThemeSettings settings) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Padding(
-          padding: EdgeInsets.fromLTRB(16, 8, 16, 8),
-          child: Text('识别设置',
-              style:
-                  TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        ),
-        ListTile(
-          title: const Text('旁白识别',
-              style: TextStyle(color: Colors.white70, fontSize: 14)),
-          trailing: const Icon(Icons.chevron_right, color: Colors.white38),
-          onTap: () {
-            showDialog(
-              context: context,
-              builder: (ctx) => AlertDialog(
-                backgroundColor: const Color(0xFF1f2937),
-                title:
-                    const Text('旁白识别', style: TextStyle(color: Colors.white)),
-                content: Consumer(builder: (context, ref, _) {
-                  final currentSettings = ref.watch(themeSettingsProvider);
-                  return Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _buildCheckboxTile(ref, 'rec_asterisk', '* ... *',
-                          currentSettings.recognizeAsteriskNarration),
-                      _buildCheckboxTile(ref, 'rec_parentheses', '( ... )',
-                          currentSettings.recognizeParenthesesNarration),
-                      _buildCheckboxTile(
-                          ref,
-                          'rec_full_parentheses',
-                          '( ... ) (全角括号)',
-                          currentSettings
-                              .recognizeFullWidthParenthesesNarration),
-                    ],
-                  );
-                }),
-                actions: [
-                  TextButton(
-                      onPressed: () => Navigator.pop(ctx),
-                      child: const Text('确定')),
-                ],
-              ),
-            );
-          },
-        ),
-        ListTile(
-          title: const Text('引用识别',
-              style: TextStyle(color: Colors.white70, fontSize: 14)),
-          trailing: const Icon(Icons.chevron_right, color: Colors.white38),
-          onTap: () {
-            showDialog(
-              context: context,
-              builder: (ctx) => AlertDialog(
-                backgroundColor: const Color(0xFF1f2937),
-                title:
-                    const Text('引用识别', style: TextStyle(color: Colors.white)),
-                content: Consumer(builder: (context, ref, _) {
-                  final currentSettings = ref.watch(themeSettingsProvider);
-                  return Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _buildCheckboxTile(ref, 'rec_double_quote', '" ... "',
-                          currentSettings.recognizeDoubleQuoteSpeech),
-                      _buildCheckboxTile(
-                          ref,
-                          'rec_full_double_quote',
-                          '“ ... ” (全角双引号)',
-                          currentSettings.recognizeFullWidthDoubleQuoteSpeech),
-                      _buildCheckboxTile(ref, 'rec_corner_bracket', '「 ... 」',
-                          currentSettings.recognizeCornerBracketSpeech),
-                    ],
-                  );
-                }),
-                actions: [
-                  TextButton(
-                      onPressed: () => Navigator.pop(ctx),
-                      child: const Text('确定')),
-                ],
-              ),
-            );
-          },
-        ),
-      ],
-    );
-  }
-
-  Widget _buildCheckboxTile(
-      WidgetRef ref, String key, String label, bool value) {
-    return CheckboxListTile(
-      title: Text(label, style: const TextStyle(color: Colors.white70)),
-      value: value,
-      activeColor: Colors.indigoAccent,
-      onChanged: (val) {
-        ref.read(themeSettingsProvider.notifier).togglePattern(key);
-      },
-    );
-  }
-
-  Widget _buildDetailedColorPicker(BuildContext context, WidgetRef ref,
-      String label, Color currentColor, String colorKey) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label,
-              style: const TextStyle(color: Colors.white70, fontSize: 13)),
-          GestureDetector(
-            onTap: () => _showColorPickerDialog(context, ref, colorKey),
-            child: Container(
-              width: 30,
-              height: 30,
-              decoration: BoxDecoration(
-                color: currentColor,
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white24),
-                boxShadow: [
-                  BoxShadow(
-                      color: currentColor.withOpacity(0.3), blurRadius: 4),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildColorPicker(
-      BuildContext context, WidgetRef ref, String key, Color currentColor) {
-    return GestureDetector(
-      onTap: () {
-        _showColorPickerDialog(context, ref, key);
-      },
-      child: Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          color: currentColor,
-          shape: BoxShape.circle,
-          border: Border.all(color: Colors.white, width: 2),
-          boxShadow: [
-            BoxShadow(color: currentColor.withOpacity(0.5), blurRadius: 8),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showColorPickerDialog(BuildContext context, WidgetRef ref, String key) {
-    // Simple predefined colors for now
-    final colors = [
-      Colors.indigo,
-      Colors.blue,
-      Colors.lightBlue,
-      Colors.cyan,
-      Colors.teal,
-      Colors.green,
-      Colors.lightGreen,
-      Colors.lime,
-      Colors.yellow,
-      Colors.amber,
-      Colors.orange,
-      Colors.deepOrange,
-      Colors.red,
-      Colors.pink,
-      Colors.purple,
-      Colors.deepPurple,
-      Colors.brown,
-      Colors.grey,
-      Colors.blueGrey,
-      Colors.black,
-      Colors.white,
-      const Color(0xFF1a1b26),
-      const Color(0xFF24283b),
-      Colors.transparent,
-    ];
-
-    String title;
-    switch (key) {
-      case 'user_color':
-        title = '用户气泡颜色';
-        break;
-      case 'ai_color':
-        title = 'AI 气泡颜色';
-        break;
-      case 'main_text_color':
-        title = '主要文本颜色';
-        break;
-      case 'italic_text_color':
-        title = '斜体文本颜色';
-        break;
-      case 'underline_text_color':
-        title = '下划线文本颜色';
-        break;
-      case 'quote_text_color':
-        title = '引用文本颜色';
-        break;
-      case 'shadow_color':
-        title = '阴影颜色';
-        break;
-      case 'chat_bg_color':
-        title = '聊天背景颜色';
-        break;
-      case 'ui_bg_color':
-        title = 'UI 背景颜色';
-        break;
-      case 'ui_border_color':
-        title = 'UI 边框颜色';
-        break;
-      case 'user_blur_tint':
-        title = '用户模糊色调';
-        break;
-      case 'ai_blur_tint':
-        title = 'AI 模糊色调';
-        break;
-      default:
-        title = '选择颜色';
-    }
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1f2937),
-        title: Text(title, style: const TextStyle(color: Colors.white)),
-        content: Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: colors
-              .map((c) => GestureDetector(
-                    onTap: () {
-                      ref
-                          .read(themeSettingsProvider.notifier)
-                          .updateColor(key, c);
-                      Navigator.pop(ctx);
-                    },
-                    child: Container(
-                      width: 40,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        color: c,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white24),
-                      ),
-                      child: c == Colors.transparent
-                          ? const Icon(Icons.block,
-                              color: Colors.white54, size: 20)
-                          : null,
-                    ),
-                  ))
-              .toList(),
         ),
       ),
     );
@@ -943,11 +527,9 @@ class CharacterSettingsDrawer extends ConsumerWidget {
             }
 
             // 3. Execute Clear
-            if (sessionId != null) {
-              ref
-                  .read(chatSessionProvider(sessionId).notifier)
-                  .clearHistory(customGreeting: selectedGreeting);
-            }
+            ref
+                .read(chatSessionProvider(sessionId).notifier)
+                .clearHistory(customGreeting: selectedGreeting);
 
             if (context.mounted) Navigator.pop(context); // Close drawer
           }),

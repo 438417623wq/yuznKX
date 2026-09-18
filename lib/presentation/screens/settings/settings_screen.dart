@@ -6,6 +6,7 @@ import '../../../features/user/presentation/screens/persona_list_screen.dart';
 import '../../../features/presets/presentation/screens/preset_list_screen.dart';
 import '../../../features/world_info/presentation/screens/world_info_list_screen.dart';
 import '../../../features/regex/presentation/screens/regex_list_screen.dart';
+import '../../../features/settings/presentation/screens/appearance_settings_screen.dart';
 import '../../../features/settings/presentation/screens/storage_management_screen.dart';
 import 'plugins_screen.dart';
 
@@ -57,6 +58,14 @@ class SettingsScreen extends StatelessWidget {
             );
           }),
           _buildSectionHeader("高级"),
+          _buildSettingsTile(context, Icons.color_lens_outlined, "外观与主题",
+              "背景、气泡颜色与字体大小", () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (context) => const AppearanceSettingsScreen()),
+            );
+          }),
           _buildSettingsTile(context, Icons.storage, "数据管理", "备份、恢复与清理", () {
             Navigator.push(
               context,

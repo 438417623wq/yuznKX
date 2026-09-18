@@ -29,6 +29,8 @@ class ChatBubble extends ConsumerWidget {
   final VoidCallback? onTts;
   final Map<String, dynamic>? metadata;
   final bool isGenerating; // New parameter
+  /// 是否渲染顶部头像。外观预览等紧凑场景可置 false，避免出现占位网络图。
+  final bool showAvatar;
 
   const ChatBubble({
     super.key,
@@ -44,6 +46,7 @@ class ChatBubble extends ConsumerWidget {
     this.onTts,
     this.metadata,
     this.isGenerating = false,
+    this.showAvatar = true,
   });
 
   @override
@@ -78,13 +81,15 @@ class ChatBubble extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.center, // Center everything
         children: [
           // Avatar centered above message
-          CircleAvatar(
-            backgroundImage: (avatarPath != null && avatarPath!.isNotEmpty)
-                ? FileImage(File(avatarPath!)) as ImageProvider
-                : const NetworkImage('https://via.placeholder.com/150'),
-            radius: 25 * themeSettings.fontSizeScale,
-          ),
-          const SizedBox(height: 8),
+          if (showAvatar) ...[
+            CircleAvatar(
+              backgroundImage: (avatarPath != null && avatarPath!.isNotEmpty)
+                  ? FileImage(File(avatarPath!)) as ImageProvider
+                  : const NetworkImage('https://via.placeholder.com/150'),
+              radius: 25 * themeSettings.fontSizeScale,
+            ),
+            const SizedBox(height: 8),
+          ],
 
           // Name and Controls Row
           Row(
@@ -114,9 +119,11 @@ class ChatBubble extends ConsumerWidget {
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: BoxDecoration(
+                // 气泡背景色：用户 / AI 各自的「气泡颜色」设置。
+                // （此前误用了「消息模糊色调」，导致气泡颜色设置完全不生效。）
                 color: isUser
-                    ? themeSettings.userMessageBlurTint
-                    : themeSettings.aiMessageBlurTint,
+                    ? themeSettings.userBubbleColor
+                    : themeSettings.aiBubbleColor,
                 boxShadow: [
                   BoxShadow(
                     color: themeSettings.shadowColor,

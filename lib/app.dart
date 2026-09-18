@@ -7,7 +7,7 @@ class SillyTavernApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'SillyTavern Flutter',
+      title: 'yuanKX',
       theme: ThemeData(
         brightness: Brightness.dark,
         primarySwatch: Colors.indigo,

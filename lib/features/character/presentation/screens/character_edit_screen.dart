@@ -580,22 +580,42 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
   Widget build(BuildContext context) {
     final allWorldInfo = ref.watch(worldInfoProvider);
     final allRegex = ref.watch(regexScriptsProvider);
+    final activeWorldInfoIds = ref.watch(activeWorldInfoIdsProvider);
     final activeRegexIds = ref.watch(activeRegexScriptIdsProvider);
     final characterBook = _lookupWorldInfo(_characterBookId);
-    final boundWorldInfo = allWorldInfo
-        .where((item) => _worldInfoIds.contains(item.id))
+
+    // 「全局生效」资源：来自设置板块的全局池，对所有角色卡自动生效，
+    // 本卡无需重复启用（下方「本卡额外启用」会排除它们，避免重复展示）。
+    final globalActiveWorldInfo = allWorldInfo
+        .where((item) => activeWorldInfoIds.contains(item.id))
         .toList(growable: false);
+    final globalActiveWorldInfoIds =
+        globalActiveWorldInfo.map((e) => e.id).toSet();
+
+    final globalActiveRegex = allRegex
+        .where((item) => activeRegexIds.contains(item.id))
+        .toList(growable: false);
+    final globalActiveRegexIds = globalActiveRegex.map((e) => e.id).toSet();
+
+    // 本卡额外启用的全局世界书。
+    final boundWorldInfo = allWorldInfo
+        .where((item) =>
+            _worldInfoIds.contains(item.id) &&
+            !globalActiveWorldInfoIds.contains(item.id))
+        .toList(growable: false);
+
+    // 随角色卡导入的正则（卡片独占）。
     final boundRegex = allRegex
         .where((item) => _regexScriptIds.contains(item.id))
         .toList(growable: false);
 
     // 本卡引用的全局正则：来源为设置板块已启用的全局正则池，
-    // 且排除掉已归入「角色正则」的脚本，避免两块重复展示。
+    // 且排除掉已归入「角色正则」或已「全局生效」的脚本，避免重复展示。
     final boundGlobalRegex = allRegex
         .where((item) =>
-            activeRegexIds.contains(item.id) &&
             _globalRegexIds.contains(item.id) &&
-            !_regexScriptIds.contains(item.id))
+            !_regexScriptIds.contains(item.id) &&
+            !globalActiveRegexIds.contains(item.id))
         .toList(growable: false);
     final availableGlobalRegex = allRegex
         .where((item) =>
@@ -643,6 +663,8 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
                     boundRegex: boundRegex,
                     boundGlobalRegex: boundGlobalRegex,
                     availableGlobalRegex: availableGlobalRegex,
+                    globalActiveWorldInfo: globalActiveWorldInfo,
+                    globalActiveRegex: globalActiveRegex,
                   ),
                 ],
               ),
@@ -1000,6 +1022,8 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
     required List<RegexScript> boundRegex,
     required List<RegexScript> boundGlobalRegex,
     required List<RegexScript> availableGlobalRegex,
+    required List<WorldInfo> globalActiveWorldInfo,
+    required List<RegexScript> globalActiveRegex,
   }) {
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -1082,7 +1106,7 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
         ),
         const SizedBox(height: 16),
         _buildSectionCard(
-          title: '全局世界书（本卡启用）',
+          title: '全局世界书',
           trailing: TextButton.icon(
             onPressed: () => _showWorldInfoSelector(allWorldInfo),
             icon: const Icon(Icons.add, size: 18),
@@ -1091,18 +1115,68 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // --- 分组 1：全局生效（自动继承） ---
+              _buildBindingGroupHeader(
+                label: '全局生效（自动继承，对所有角色生效）',
+                count: globalActiveWorldInfo.length,
+                color: Colors.green,
+              ),
               const Padding(
                 padding: EdgeInsets.only(bottom: 8),
                 child: Text(
-                  '来自「设置 → 全局世界书」共享资源池，此处仅决定本卡是否引用；'
-                  '世界书内容请到全局列表编辑。',
+                  '来自「设置 → 全局世界书」且已开启全局生效，本卡自动继承，'
+                  '无需在此重复启用。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
+              if (globalActiveWorldInfo.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Text('当前没有全局生效的世界书',
+                      style: TextStyle(fontSize: 12, color: Colors.grey)),
+                )
+              else
+                for (final worldInfo in globalActiveWorldInfo)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    leading: const Icon(Icons.public,
+                        size: 18, color: Colors.green),
+                    title: Text(worldInfo.name),
+                    subtitle: Text(
+                      '${worldInfo.entries.length} 条目'
+                      '${worldInfo.disabled ? ' · 自身已禁用（不会生效）' : ''}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: worldInfo.disabled ? Colors.orange : null,
+                      ),
+                    ),
+                    trailing: IconButton(
+                      onPressed: () => _editWorldInfo(worldInfo),
+                      icon: const Icon(Icons.edit_outlined),
+                      tooltip: '编辑',
+                    ),
+                  ),
+              const Divider(height: 24),
+
+              // --- 分组 2：本卡额外启用 ---
+              _buildBindingGroupHeader(
+                label: '本卡额外启用',
+                count: boundWorldInfo.length,
+                color: Colors.indigo,
+              ),
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8),
+                child: Text(
+                  '仅对当前角色卡生效的全局世界书引用；世界书内容请到全局列表编辑。',
                   style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ),
               if (boundWorldInfo.isEmpty)
                 const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 12),
-                  child: Text('当前没有绑定全局世界书'),
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Text('当前没有本卡额外启用的全局世界书',
+                      style: TextStyle(fontSize: 12, color: Colors.grey)),
                 ),
               for (final worldInfo in boundWorldInfo)
                 ListTile(
@@ -1206,7 +1280,7 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
         ),
         const SizedBox(height: 16),
         _buildSectionCard(
-          title: '全局正则（本卡启用）',
+          title: '全局正则',
           trailing: TextButton.icon(
             onPressed: () => _showGlobalRegexSelector(availableGlobalRegex),
             icon: const Icon(Icons.add, size: 18),
@@ -1215,18 +1289,72 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // --- 分组 1：全局生效（自动继承） ---
+              _buildBindingGroupHeader(
+                label: '全局生效（自动继承，对所有角色生效）',
+                count: globalActiveRegex.length,
+                color: Colors.green,
+              ),
               const Padding(
                 padding: EdgeInsets.only(bottom: 8),
                 child: Text(
-                  '来自「设置 → 全局正则」共享资源池，此处仅决定本卡是否引用；'
+                  '来自「设置 → 全局正则」且已开启全局生效，本卡自动继承，'
+                  '无需在此重复启用。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
+              if (globalActiveRegex.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Text('当前没有全局生效的正则',
+                      style: TextStyle(fontSize: 12, color: Colors.grey)),
+                )
+              else
+                for (final script in globalActiveRegex)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    leading: const Icon(Icons.public,
+                        size: 18, color: Colors.green),
+                    title: Text(script.scriptName),
+                    subtitle: Text(
+                      script.disabled
+                          ? '自身已禁用（不会生效）'
+                          : script.findRegex,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: script.disabled ? Colors.orange : null,
+                      ),
+                    ),
+                    trailing: IconButton(
+                      onPressed: () => _editRegex(script),
+                      icon: const Icon(Icons.edit_outlined),
+                      tooltip: '编辑',
+                    ),
+                  ),
+              const Divider(height: 24),
+
+              // --- 分组 2：本卡额外启用 ---
+              _buildBindingGroupHeader(
+                label: '本卡额外启用',
+                count: boundGlobalRegex.length,
+                color: Colors.indigo,
+              ),
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8),
+                child: Text(
+                  '仅对当前角色卡生效的全局正则引用，不受全局生效开关影响；'
                   '脚本内容请到全局列表编辑。',
                   style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ),
               if (boundGlobalRegex.isEmpty)
                 const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 12),
-                  child: Text('当前没有绑定全局正则'),
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Text('当前没有本卡额外启用的全局正则',
+                      style: TextStyle(fontSize: 12, color: Colors.grey)),
                 ),
               for (final script in boundGlobalRegex)
                 ListTile(
@@ -1269,6 +1397,48 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
           ),
         ),
       ],
+    );
+  }
+
+  /// 绑定页内的分组标题（用于区分「全局生效」与「本卡额外启用」）。
+  Widget _buildBindingGroupHeader({
+    required String label,
+    required int count,
+    required MaterialColor color,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        children: [
+          Icon(Icons.label_outline, size: 16, color: color.shade400),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: color.shade300,
+              ),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              '$count',
+              style: TextStyle(
+                fontSize: 11,
+                color: color.shade300,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

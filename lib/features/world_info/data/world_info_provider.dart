@@ -167,10 +167,12 @@ class WorldInfoNotifier extends StateNotifier<List<WorldInfo>> {
 
 class ActiveWorldInfoIdsNotifier extends StateNotifier<List<String>> {
   ActiveWorldInfoIdsNotifier() : super([]) { _load(); }
-  
+
+  static const _settingsKey = 'active_world_info_ids';
+
   void _load() {
     final box = Hive.box('settings');
-    final raw = box.get('active_world_info_ids');
+    final raw = box.get(_settingsKey);
     if (raw != null) {
       if (raw is List) {
         state = raw.cast<String>();
@@ -181,14 +183,61 @@ class ActiveWorldInfoIdsNotifier extends StateNotifier<List<String>> {
     }
   }
 
+  Future<void> _persist(List<String> next) async {
+    state = next;
+    final box = Hive.box('settings');
+    await box.put(_settingsKey, next);
+  }
+
   Future<void> toggle(String id) async {
     if (state.contains(id)) {
-      state = state.where((e) => e != id).toList();
+      await _persist(state.where((e) => e != id).toList());
     } else {
-      state = [...state, id];
+      await _persist([...state, id]);
     }
-    final box = Hive.box('settings');
-    await box.put('active_world_info_ids', state);
+  }
+
+  /// 显式设置某本世界书的「全局生效」状态。
+  ///
+  /// 相比 [toggle]，本方法幂等：重复设为同一状态不会来回翻转，
+  /// 适合绑定到开关控件。
+  Future<void> setActive(String id, bool active) async {
+    final normalized = id.trim();
+    if (normalized.isEmpty) {
+      return;
+    }
+    final next = state.toSet();
+    if (active) {
+      next.add(normalized);
+    } else {
+      next.remove(normalized);
+    }
+    await _persist(next.toList());
+  }
+
+  /// 批量设置「全局生效」状态，用于分组级别的全选 / 全不选。
+  Future<void> setMany(Iterable<String> ids, bool active) async {
+    final next = state.toSet();
+    var changed = false;
+    for (final raw in ids) {
+      final normalized = raw.trim();
+      if (normalized.isEmpty) {
+        continue;
+      }
+      if (active) {
+        if (next.add(normalized)) {
+          changed = true;
+        }
+      } else {
+        if (next.remove(normalized)) {
+          changed = true;
+        }
+      }
+    }
+    if (!changed) {
+      return;
+    }
+    await _persist(next.toList());
   }
 }
 

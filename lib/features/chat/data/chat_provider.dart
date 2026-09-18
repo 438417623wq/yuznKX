@@ -1306,12 +1306,15 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       // 角色自带正则（随卡导入，extensions.regex_scripts）。
       activeIds.addAll(character.regexScriptIds);
       // 角色额外引用的全局正则（来自设置板块的全局正则池）。
-      // 全局池的启用状态由 activeRegexScriptIdsProvider 统一控制，
-      // 因此此处只在它已启用时才纳入，避免绕过用户开关。
-      final globalActiveIds = _ref.read(activeRegexScriptIdsProvider);
+      //
+      // 语义上与「全局生效」相互独立：
+      // - 全局生效（activeRegexScriptIdsProvider）：对所有角色卡生效
+      // - globalRegexIds：仅本卡引用，不要求该脚本处于全局生效状态
+      //
+      // 若某脚本同时出现在两处，activeIds 是 Set，会自动去重，不会重复执行。
       for (final globalRegexId in character.globalRegexIds) {
         final normalized = globalRegexId.trim();
-        if (normalized.isNotEmpty && globalActiveIds.contains(normalized)) {
+        if (normalized.isNotEmpty) {
           activeIds.add(normalized);
         }
       }

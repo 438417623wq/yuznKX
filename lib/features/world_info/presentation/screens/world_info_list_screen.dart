@@ -66,65 +66,273 @@ class WorldInfoListScreen extends ConsumerWidget {
           ),
         ],
       ),
-      body: ListView.builder(
+      body: ListView(
         padding: const EdgeInsets.all(16),
-        itemCount: list.length,
-        itemBuilder: (context, index) {
-          final item = list[index];
-          final isActive = activeIds.contains(item.id);
-          return Card(
-            margin: const EdgeInsets.only(bottom: 16),
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: BorderSide(color: Colors.grey.shade300)),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(12),
-              onTap: () {
-                Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => WorldInfoEditScreen(worldInfo: item)));
-              },
-              child: Padding(
-                padding: const EdgeInsets.all(16),
+        children: [
+          _buildGlobalActiveSection(context, ref, list, activeIds),
+          const SizedBox(height: 24),
+          _buildAllSectionHeader(list.length),
+          const SizedBox(height: 8),
+          if (list.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 32),
+              child: Center(
+                child: Text('还没有世界书，点击右上角「新建」或「导入」添加。',
+                    style: TextStyle(color: Colors.grey)),
+              ),
+            )
+          else
+            ...list.map(
+              (item) => _buildWorldInfoCard(
+                context,
+                ref,
+                item,
+                isActive: activeIds.contains(item.id),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 「全局生效」区块：集中展示对所有角色生效的世界书。
+  ///
+  /// 底层就是 `active_world_info_ids`（由 [activeWorldInfoIdsProvider] 承载），
+  /// 它在 `chat_provider` 中作为 globalIds 参与合并，对全部角色卡生效。
+  Widget _buildGlobalActiveSection(
+    BuildContext context,
+    WidgetRef ref,
+    List<WorldInfo> list,
+    List<String> activeIds,
+  ) {
+    final activeSet = activeIds.toSet();
+    final activeItems =
+        list.where((item) => activeSet.contains(item.id)).toList(growable: false);
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+      decoration: BoxDecoration(
+        color: Colors.green.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.green.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.public, size: 20, color: Colors.green.shade400),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text('全局生效（对所有角色）',
+                    style:
+                        TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.green.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  '${activeItems.length} 个',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.green.shade300,
+                      fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            '勾选后对全部角色卡自动生效，无需在每张卡里单独启用。'
+            '（角色卡专属世界书请到角色卡「绑定」页设置）',
+            style: TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+          const SizedBox(height: 12),
+          if (activeItems.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Text(
+                '暂无全局生效的世界书。在下方列表中打开「全局生效」开关即可添加。',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+              ),
+            )
+          else
+            for (final item in activeItems)
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.green.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(8),
+                ),
                 child: Row(
                   children: [
-                    Icon(Icons.book, color: Colors.green.shade700, size: 32),
-                    const SizedBox(width: 16),
+                    Icon(Icons.book, size: 18, color: Colors.green.shade400),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(item.name,
                               style: const TextStyle(
-                                  fontSize: 18, fontWeight: FontWeight.bold)),
-                          Text('${item.entries.length} 个条目',
-                              style: TextStyle(color: Colors.grey[600])),
+                                  fontSize: 14, fontWeight: FontWeight.w600)),
+                          Text(
+                            '${item.entries.length} 个条目'
+                            '${item.disabled ? ' · 自身已禁用（不会生效）' : ''}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: item.disabled
+                                  ? Colors.orange.shade300
+                                  : Colors.grey,
+                            ),
+                          ),
                         ],
                       ),
                     ),
                     IconButton(
-                      icon: Icon(Icons.power_settings_new,
-                          color: isActive ? Colors.green : Colors.grey),
-                      onPressed: () {
-                        ref
-                            .read(activeWorldInfoIdsProvider.notifier)
-                            .toggle(item.id);
-                      },
+                      tooltip: '取消全局生效',
+                      icon: Icon(Icons.remove_circle_outline,
+                          size: 20, color: Colors.green.shade300),
+                      onPressed: () => ref
+                          .read(activeWorldInfoIdsProvider.notifier)
+                          .setActive(item.id, false),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.share),
+                      tooltip: '编辑',
+                      icon: const Icon(Icons.edit_outlined, size: 18),
                       onPressed: () {
-                        FileHelper.exportJson(item.toJson(), item.name);
+                        Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) =>
+                                    WorldInfoEditScreen(worldInfo: item)));
                       },
                     ),
                   ],
                 ),
               ),
-            ),
-          );
-        },
+        ],
       ),
+    );
+  }
+
+  Widget _buildAllSectionHeader(int total) {
+    return Row(
+      children: [
+        const Icon(Icons.list_alt, size: 20, color: Colors.grey),
+        const SizedBox(width: 8),
+        const Text('全部世界书',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+        const SizedBox(width: 8),
+        Text('共 $total 个',
+            style: const TextStyle(fontSize: 12, color: Colors.grey)),
+      ],
+    );
+  }
+
+  Widget _buildWorldInfoCard(
+    BuildContext context,
+    WidgetRef ref,
+    WorldInfo item, {
+    required bool isActive,
+  }) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(
+            color: isActive
+                ? Colors.green.withValues(alpha: 0.5)
+                : Colors.grey.shade700,
+          )),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => WorldInfoEditScreen(worldInfo: item)));
+        },
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+          child: Row(
+            children: [
+              Icon(Icons.book,
+                  color: isActive ? Colors.green.shade400 : Colors.grey,
+                  size: 28),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(item.name,
+                        style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Text('${item.entries.length} 个条目',
+                            style:
+                                TextStyle(color: Colors.grey[500], fontSize: 12)),
+                        if (isActive) ...[
+                          const SizedBox(width: 8),
+                          _buildStatusChip('已全局生效', Colors.green),
+                        ],
+                        if (item.disabled) ...[
+                          const SizedBox(width: 8),
+                          _buildStatusChip('自身已禁用', Colors.orange),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              Column(
+                children: [
+                  Text('全局生效',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: isActive ? Colors.green.shade300 : Colors.grey,
+                      )),
+                  Switch(
+                    value: isActive,
+                    activeThumbColor: Colors.green,
+                    onChanged: (val) => ref
+                        .read(activeWorldInfoIdsProvider.notifier)
+                        .setActive(item.id, val),
+                  ),
+                ],
+              ),
+              IconButton(
+                tooltip: '导出',
+                icon: const Icon(Icons.share, size: 20),
+                onPressed: () {
+                  FileHelper.exportJson(item.toJson(), item.name);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatusChip(String label, MaterialColor color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Text(label,
+          style: TextStyle(
+              fontSize: 10, color: color.shade300, fontWeight: FontWeight.w600)),
     );
   }
 }
