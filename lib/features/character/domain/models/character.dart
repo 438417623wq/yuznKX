@@ -28,8 +28,16 @@ class Character {
   final String? boundModelId; // For specific API config binding if needed
   final String? preferredModelName; // e.g. "gpt-4", "claude-3"
   final String? characterBookId;
+
+  /// 本卡引用的「全局世界书」ID（来自全局资源池，非卡片独占）。
   final List<String> worldInfoIds;
+
+  /// 随角色卡导入的「角色正则」ID（extensions.regex_scripts）。
   final List<String> regexScriptIds;
+
+  /// 本卡引用的「全局正则」ID（来自设置板块的全局正则池）。
+  final List<String> globalRegexIds;
+
   final bool isGroup;
   final List<String> groupMemberIds;
 
@@ -64,6 +72,7 @@ class Character {
     this.characterBookId,
     this.worldInfoIds = const [],
     this.regexScriptIds = const [],
+    this.globalRegexIds = const [],
     this.isGroup = false,
     this.groupMemberIds = const [],
     this.cardSpec = 'chara_card_v2',
@@ -96,6 +105,7 @@ class Character {
     String? characterBookId,
     List<String>? worldInfoIds,
     List<String>? regexScriptIds,
+    List<String>? globalRegexIds,
     bool? isGroup,
     List<String>? groupMemberIds,
     String? cardSpec,
@@ -128,6 +138,7 @@ class Character {
       characterBookId: characterBookId ?? this.characterBookId,
       worldInfoIds: worldInfoIds ?? this.worldInfoIds,
       regexScriptIds: regexScriptIds ?? this.regexScriptIds,
+      globalRegexIds: globalRegexIds ?? this.globalRegexIds,
       isGroup: isGroup ?? this.isGroup,
       groupMemberIds: groupMemberIds ?? this.groupMemberIds,
       cardSpec: cardSpec ?? this.cardSpec,
@@ -163,6 +174,7 @@ class Character {
       'characterBookId': characterBookId,
       'worldInfoIds': worldInfoIds,
       'regexScriptIds': regexScriptIds,
+      'globalRegexIds': globalRegexIds,
       'isGroup': isGroup,
       'groupMemberIds': groupMemberIds,
       'cardSpec': cardSpec,
@@ -218,6 +230,7 @@ class Character {
       characterBookId: characterBookId.isEmpty ? null : characterBookId,
       worldInfoIds: List<String>.from(json['worldInfoIds'] ?? []),
       regexScriptIds: List<String>.from(json['regexScriptIds'] ?? []),
+      globalRegexIds: List<String>.from(json['globalRegexIds'] ?? []),
       isGroup: json['isGroup'] ?? false,
       groupMemberIds: List<String>.from(json['groupMemberIds'] ?? []),
       cardSpec: json['cardSpec']?.toString() ?? 'chara_card_v2',

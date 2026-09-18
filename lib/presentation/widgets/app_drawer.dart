@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../../features/settings/presentation/screens/storage_management_screen.dart';
 import '../../features/character/presentation/screens/character_list_screen.dart';
+import '../../features/world_info/presentation/screens/world_info_list_screen.dart';
+import '../../features/regex/presentation/screens/regex_list_screen.dart';
 
 class AppDrawer extends StatelessWidget {
   const AppDrawer({super.key});
@@ -53,7 +55,19 @@ class AppDrawer extends StatelessWidget {
                // Open API settings
             }),
             _buildDrawerItem(context, Icons.settings_applications, "高级格式", () {}),
-            _buildDrawerItem(context, Icons.book, "世界书 (Lorebook)", () {}),
+            const Divider(color: Colors.grey),
+            // 资源池：角色卡内的同名资源与这里相互独立
+            _buildDrawerItem(context, Icons.book, "全局世界书 (Global World Info)", () {
+              Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const WorldInfoListScreen()));
+            }),
+            _buildDrawerItem(context, Icons.code, "全局正则 (Global Regex)", () {
+              Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const RegexListScreen()));
+            }),
             const Divider(color: Colors.grey),
             _buildDrawerItem(context, Icons.extension, "插件扩展", () {}),
             _buildDrawerItem(context, Icons.storage, "存储与数据", () {

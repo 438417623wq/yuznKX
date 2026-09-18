@@ -47,8 +47,16 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
   String _avatarPath = '';
   List<String> _tags = [];
   List<String> _alternateGreetings = [];
+
+  /// 本卡引用的「全局世界书」ID（非卡片独占，来自全局资源池）。
   List<String> _worldInfoIds = [];
+
+  /// 随角色卡导入的「角色正则」ID（extensions.regex_scripts）。
   List<String> _regexScriptIds = [];
+
+  /// 本卡引用的「全局正则」ID（来自设置板块的全局正则池）。
+  List<String> _globalRegexIds = [];
+
   String? _characterBookId;
 
   @override
@@ -94,6 +102,7 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
         List<String>.from(character?.alternateGreetings ?? const []);
     _worldInfoIds = List<String>.from(character?.worldInfoIds ?? const []);
     _regexScriptIds = List<String>.from(character?.regexScriptIds ?? const []);
+    _globalRegexIds = List<String>.from(character?.globalRegexIds ?? const []);
     _characterBookId = character?.characterBookId;
   }
 
@@ -167,6 +176,9 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
           .toList(growable: false),
       regexScriptIds: _regexScriptIds
           .where((id) => id.trim().isNotEmpty)
+          .toList(growable: false),
+      globalRegexIds: _globalRegexIds
+          .where((id) => id.trim().isNotEmpty && !_regexScriptIds.contains(id))
           .toList(growable: false),
       cardSpec: widget.character?.cardSpec ?? 'chara_card_v2',
       cardSpecVersion: widget.character?.cardSpecVersion ?? '2.0',
@@ -426,16 +438,169 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
     }
   }
 
+  /// 选择本卡要引用的「全局正则」。
+  ///
+  /// 候选来自设置板块"全局正则"里已启用的脚本；角色自带正则
+  /// （[_regexScriptIds]）已在角色正则板块单独管理，此处不重复列出。
+  Future<void> _showGlobalRegexSelector(
+      List<RegexScript> activeGlobalRegex) async {
+    final selected = _globalRegexIds.toSet();
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('选择全局正则'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: activeGlobalRegex.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Text(
+                      '暂无可选的全局正则。\n请先到「设置 → 全局正则」中创建并启用脚本。',
+                    ),
+                  )
+                : ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (final script in activeGlobalRegex)
+                        CheckboxListTile(
+                          value: selected.contains(script.id),
+                          title: Text(script.scriptName),
+                          subtitle: Text(
+                            script.findRegex,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          onChanged: (value) {
+                            setDialogState(() {
+                              if (value == true) {
+                                selected.add(script.id);
+                              } else {
+                                selected.remove(script.id);
+                              }
+                            });
+                          },
+                        ),
+                    ],
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                setState(() {
+                  _globalRegexIds = selected.toList(growable: false);
+                });
+                Navigator.pop(context);
+              },
+              child: const Text('确定'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 从全局资源池中彻底删除一个世界书。
+  Future<void> _deleteWorldInfo(WorldInfo worldInfo) async {
+    final confirmed = await _confirmDelete(
+      title: '删除世界书',
+      message: '确定要删除「${worldInfo.name}」吗？\n'
+          '该世界书将从全局资源池中永久移除，所有引用它的角色卡都会失去它。',
+    );
+    if (confirmed != true) {
+      return;
+    }
+
+    await ref.read(worldInfoProvider.notifier).delete(worldInfo.id);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      if (_characterBookId == worldInfo.id) {
+        _characterBookId = null;
+      }
+      _worldInfoIds =
+          _worldInfoIds.where((item) => item != worldInfo.id).toList();
+    });
+  }
+
+  /// 从全局资源池中彻底删除一个正则脚本。
+  Future<void> _deleteRegex(RegexScript script) async {
+    final confirmed = await _confirmDelete(
+      title: '删除正则脚本',
+      message: '确定要删除「${script.scriptName}」吗？\n'
+          '该脚本将从资源池中永久移除，所有引用它的角色卡都会失去它。',
+    );
+    if (confirmed != true) {
+      return;
+    }
+
+    await ref.read(regexScriptsProvider.notifier).delete(script.id);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _regexScriptIds =
+          _regexScriptIds.where((item) => item != script.id).toList();
+      _globalRegexIds =
+          _globalRegexIds.where((item) => item != script.id).toList();
+    });
+  }
+
+  Future<bool?> _confirmDelete({
+    required String title,
+    required String message,
+  }) {
+    return showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final allWorldInfo = ref.watch(worldInfoProvider);
     final allRegex = ref.watch(regexScriptsProvider);
+    final activeRegexIds = ref.watch(activeRegexScriptIdsProvider);
     final characterBook = _lookupWorldInfo(_characterBookId);
     final boundWorldInfo = allWorldInfo
         .where((item) => _worldInfoIds.contains(item.id))
         .toList(growable: false);
     final boundRegex = allRegex
         .where((item) => _regexScriptIds.contains(item.id))
+        .toList(growable: false);
+
+    // 本卡引用的全局正则：来源为设置板块已启用的全局正则池，
+    // 且排除掉已归入「角色正则」的脚本，避免两块重复展示。
+    final boundGlobalRegex = allRegex
+        .where((item) =>
+            activeRegexIds.contains(item.id) &&
+            _globalRegexIds.contains(item.id) &&
+            !_regexScriptIds.contains(item.id))
+        .toList(growable: false);
+    final availableGlobalRegex = allRegex
+        .where((item) =>
+            activeRegexIds.contains(item.id) &&
+            !_regexScriptIds.contains(item.id))
         .toList(growable: false);
 
     return Scaffold(
@@ -476,6 +641,8 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
                     characterBook: characterBook,
                     boundWorldInfo: boundWorldInfo,
                     boundRegex: boundRegex,
+                    boundGlobalRegex: boundGlobalRegex,
+                    availableGlobalRegex: availableGlobalRegex,
                   ),
                 ],
               ),
@@ -602,13 +769,13 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
         ),
         const SizedBox(height: 16),
         _buildSectionCard(
-          title: '描述',
+          title: '描述 (Description)',
           child: TextFormField(
             controller: _descriptionCtrl,
             minLines: 4,
             maxLines: 6,
             decoration: const InputDecoration(
-              labelText: 'Description',
+              labelText: '角色描述 (Description)',
               border: OutlineInputBorder(),
             ),
           ),
@@ -658,7 +825,7 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
         ),
         const SizedBox(height: 16),
         _buildSectionCard(
-          title: 'System Prompt',
+          title: '系统提示词 (System Prompt)',
           child: TextFormField(
             controller: _systemPromptCtrl,
             minLines: 4,
@@ -670,7 +837,7 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
         ),
         const SizedBox(height: 16),
         _buildSectionCard(
-          title: 'Scenario',
+          title: '场景设定 (Scenario)',
           child: TextFormField(
             controller: _scenarioCtrl,
             minLines: 4,
@@ -682,7 +849,7 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
         ),
         const SizedBox(height: 16),
         _buildSectionCard(
-          title: 'Creator Notes',
+          title: '作者备注 (Creator Notes)',
           child: TextFormField(
             controller: _creatorNotesCtrl,
             minLines: 3,
@@ -694,7 +861,7 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
         ),
         const SizedBox(height: 16),
         _buildSectionCard(
-          title: 'Depth Prompt / Post History Instructions',
+          title: '深度提示词 / 历史后置指令 (Depth Prompt / Post History Instructions)',
           child: Column(
             children: [
               TextFormField(
@@ -713,7 +880,8 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
                       controller: _depthCtrl,
                       keyboardType: TextInputType.number,
                       decoration: const InputDecoration(
-                        labelText: 'Depth',
+                        labelText: '注入深度 (Depth)',
+                        helperText: '相对对话末尾的层数，越小越靠近末尾。',
                         border: OutlineInputBorder(),
                       ),
                     ),
@@ -724,7 +892,8 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
                       controller: _frequencyCtrl,
                       keyboardType: TextInputType.number,
                       decoration: const InputDecoration(
-                        labelText: 'Frequency',
+                        labelText: '注入频率 (Frequency)',
+                        helperText: '每隔 N 条消息插入一次，0 表示不重复注入。',
                         border: OutlineInputBorder(),
                       ),
                     ),
@@ -743,7 +912,7 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
       padding: const EdgeInsets.all(16),
       children: [
         _buildSectionCard(
-          title: 'First Message',
+          title: '开场白 (First Message)',
           child: TextFormField(
             controller: _firstMessageCtrl,
             minLines: 5,
@@ -755,7 +924,7 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
         ),
         const SizedBox(height: 16),
         _buildSectionCard(
-          title: 'Alternate Greetings',
+          title: '备用开场白 (Alternate Greetings)',
           trailing: TextButton.icon(
             onPressed: () {
               setState(() {
@@ -809,7 +978,7 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
         ),
         const SizedBox(height: 16),
         _buildSectionCard(
-          title: 'Example Dialogue',
+          title: '示例对话 (Example Dialogue)',
           child: TextFormField(
             controller: _exampleCtrl,
             minLines: 6,
@@ -829,10 +998,24 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
     required WorldInfo? characterBook,
     required List<WorldInfo> boundWorldInfo,
     required List<RegexScript> boundRegex,
+    required List<RegexScript> boundGlobalRegex,
+    required List<RegexScript> availableGlobalRegex,
   }) {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        _buildSectionCard(
+          title: '角色卡偏好设置',
+          child: TextFormField(
+            controller: _preferredModelCtrl,
+            decoration: const InputDecoration(
+              labelText: '角色偏好模型名 (Preferred Model)',
+              helperText: '可选，覆盖当前聊天使用的默认模型名',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
         _buildSectionCard(
           title: '角色卡世界书',
           trailing: Wrap(
@@ -848,12 +1031,23 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
               ),
             ],
           ),
-          child: characterBook == null
-              ? const Padding(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8),
+                child: Text(
+                  '随角色卡导入的内嵌世界书（character_book），仅本卡使用。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
+              if (characterBook == null)
+                const Padding(
                   padding: EdgeInsets.symmetric(vertical: 12),
                   child: Text('当前没有绑定角色卡世界书'),
                 )
-              : ListTile(
+              else
+                ListTile(
                   contentPadding: EdgeInsets.zero,
                   title: Text(characterBook.name),
                   subtitle: Text('${characterBook.entries.length} 条目'),
@@ -864,6 +1058,12 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
                         onPressed: () => _editWorldInfo(characterBook),
                         icon: const Icon(Icons.edit_outlined),
                         tooltip: '编辑',
+                      ),
+                      IconButton(
+                        onPressed: () => _deleteWorldInfo(characterBook),
+                        icon:
+                            const Icon(Icons.delete_outline, color: Colors.red),
+                        tooltip: '删除',
                       ),
                       IconButton(
                         onPressed: () {
@@ -877,17 +1077,28 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
                     ],
                   ),
                 ),
+            ],
+          ),
         ),
         const SizedBox(height: 16),
         _buildSectionCard(
-          title: '全局世界书',
+          title: '全局世界书（本卡启用）',
           trailing: TextButton.icon(
             onPressed: () => _showWorldInfoSelector(allWorldInfo),
             icon: const Icon(Icons.add, size: 18),
             label: const Text('管理'),
           ),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8),
+                child: Text(
+                  '来自「设置 → 全局世界书」共享资源池，此处仅决定本卡是否引用；'
+                  '世界书内容请到全局列表编辑。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
               if (boundWorldInfo.isEmpty)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 12),
@@ -905,6 +1116,12 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
                         onPressed: () => _editWorldInfo(worldInfo),
                         icon: const Icon(Icons.edit_outlined),
                         tooltip: '编辑',
+                      ),
+                      IconButton(
+                        onPressed: () => _deleteWorldInfo(worldInfo),
+                        icon:
+                            const Icon(Icons.delete_outline, color: Colors.red),
+                        tooltip: '删除',
                       ),
                       IconButton(
                         onPressed: () {
@@ -925,23 +1142,23 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
         ),
         const SizedBox(height: 16),
         _buildSectionCard(
-          title: '角色正则',
+          title: '角色正则（本卡启用）',
           trailing: TextButton.icon(
             onPressed: () => _showRegexSelector(allRegex),
             icon: const Icon(Icons.add, size: 18),
             label: const Text('管理'),
           ),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              TextFormField(
-                controller: _preferredModelCtrl,
-                decoration: const InputDecoration(
-                  labelText: '角色偏好模型名',
-                  helperText: '可选，覆盖当前聊天使用的默认模型名',
-                  border: OutlineInputBorder(),
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8),
+                child: Text(
+                  '随角色卡导入的正则（extensions.regex_scripts），删除角色卡时会'
+                  '一并回收未被其它卡片引用的条目。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ),
-              const SizedBox(height: 12),
               if (boundRegex.isEmpty)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 12),
@@ -965,9 +1182,79 @@ class _CharacterEditScreenState extends ConsumerState<CharacterEditScreen>
                         tooltip: '编辑',
                       ),
                       IconButton(
+                        onPressed: () => _deleteRegex(script),
+                        icon:
+                            const Icon(Icons.delete_outline, color: Colors.red),
+                        tooltip: '删除',
+                      ),
+                      IconButton(
                         onPressed: () {
                           setState(() {
                             _regexScriptIds = _regexScriptIds
+                                .where((id) => id != script.id)
+                                .toList();
+                          });
+                        },
+                        icon: const Icon(Icons.link_off_outlined),
+                        tooltip: '解绑',
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _buildSectionCard(
+          title: '全局正则（本卡启用）',
+          trailing: TextButton.icon(
+            onPressed: () => _showGlobalRegexSelector(availableGlobalRegex),
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('管理'),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8),
+                child: Text(
+                  '来自「设置 → 全局正则」共享资源池，此处仅决定本卡是否引用；'
+                  '脚本内容请到全局列表编辑。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
+              if (boundGlobalRegex.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Text('当前没有绑定全局正则'),
+                ),
+              for (final script in boundGlobalRegex)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(script.scriptName),
+                  subtitle: Text(
+                    script.findRegex,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: Wrap(
+                    spacing: 8,
+                    children: [
+                      IconButton(
+                        onPressed: () => _editRegex(script),
+                        icon: const Icon(Icons.edit_outlined),
+                        tooltip: '编辑',
+                      ),
+                      IconButton(
+                        onPressed: () => _deleteRegex(script),
+                        icon:
+                            const Icon(Icons.delete_outline, color: Colors.red),
+                        tooltip: '删除',
+                      ),
+                      IconButton(
+                        onPressed: () {
+                          setState(() {
+                            _globalRegexIds = _globalRegexIds
                                 .where((id) => id != script.id)
                                 .toList();
                           });

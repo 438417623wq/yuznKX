@@ -43,3 +43,10 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local Flutter SDK / tool state (machine-specific)
+.flutter
+.flutter_tool_state
+
+# WorkBuddy AI workspace data (agent-local, not source)
+.workbuddy-ai/

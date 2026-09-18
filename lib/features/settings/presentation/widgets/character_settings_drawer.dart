@@ -306,9 +306,9 @@ class CharacterSettingsDrawer extends ConsumerWidget {
 
                       _buildSettingsTile(
                         Icons.book,
-                        '世界书 (World Info)',
+                        '全局世界书 (Global World Info)',
                         activeWorldInfoIds.isEmpty
-                            ? '未启用'
+                            ? '未启用（角色卡世界书请在角色卡「绑定」页设置）'
                             : '已启用 ${activeWorldInfoIds.length} 个',
                         onTap: () {
                           Navigator.push(
@@ -319,9 +319,9 @@ class CharacterSettingsDrawer extends ConsumerWidget {
                       ),
                       _buildSettingsTile(
                         Icons.code,
-                        '正则脚本 (Regex)',
+                        '全局正则 (Global Regex)',
                         activeRegexIds.isEmpty
-                            ? '未启用'
+                            ? '未启用（角色卡正则请在角色卡「绑定」页设置）'
                             : '已启用 ${activeRegexIds.length} 个',
                         onTap: () {
                           Navigator.push(

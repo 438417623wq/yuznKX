@@ -113,6 +113,15 @@ class CharacterListNotifier extends StateNotifier<List<Character>> {
     }
   }
 
+  /// 删除角色卡时，一并回收该卡"独占"的资源。
+  ///
+  /// 隔离规则（重要）：
+  /// - 角色卡世界书 `characterBookId` 是卡片独占数据（随卡导入到全局池），删除卡片时直接删除。
+  /// - 角色卡绑定的正则 `regexScriptIds` / 世界书 `worldInfoIds` 可能被多张卡片或用户手动
+  ///   共享引用。只有当某个资源"没有任何其它卡片引用"时，才判定为孤立的随卡数据并回收；
+  ///   否则仅解除绑定（因为归属信息只存在于角色卡上，卡片一删就再也无法定位）。
+  /// - 无论是否回收资源，都要清理 `settings` 里的启用记录
+  ///   （`active_regex_ids` / `active_world_info_ids`），避免留下指向已删除数据的脏 ID。
   Future<void> delete(String id) async {
     final character = state.firstWhere(
       (c) => c.id == id,
@@ -125,11 +134,44 @@ class CharacterListNotifier extends StateNotifier<List<Character>> {
           firstMessage: ''),
     );
 
-    if (character.id.isNotEmpty && character.characterBookId != null) {
-      await ref
-          .read(worldInfoProvider.notifier)
-          .delete(character.characterBookId!);
+    if (character.id.isEmpty) {
+      await _box.delete(id);
+      state = state.where((c) => c.id != id).toList();
+      final activeId = ref.read(activeCharacterIdProvider);
+      if (activeId == id) {
+        ref.read(activeCharacterIdProvider.notifier).setActive(null);
+      }
+      return;
     }
+
+    // 1) 角色卡自带世界书：独占数据，直接删除。
+    final bookId = character.characterBookId?.trim();
+    if (bookId != null && bookId.isNotEmpty) {
+      await ref.read(worldInfoProvider.notifier).delete(bookId);
+      await _removeFromActiveWorldInfoIds({bookId});
+    }
+
+    // 2) 角色卡绑定的正则脚本：仅在无其它卡片引用时回收。
+    final ownedRegexIds = await _collectUnownedRegexIds(
+      removingCharacterId: id,
+      candidateIds: character.regexScriptIds,
+      removingCharacter: character,
+    );
+    for (final regexId in ownedRegexIds) {
+      await ref.read(regexScriptsProvider.notifier).delete(regexId);
+    }
+    await _removeFromActiveRegexIds(ownedRegexIds);
+
+    // 3) 角色卡绑定的世界书：同上，仅回收孤立项。
+    final ownedWorldInfoIds = await _collectUnownedWorldInfoIds(
+      removingCharacterId: id,
+      candidateIds: character.worldInfoIds,
+      removingCharacter: character,
+    );
+    for (final worldInfoId in ownedWorldInfoIds) {
+      await ref.read(worldInfoProvider.notifier).delete(worldInfoId);
+    }
+    await _removeFromActiveWorldInfoIds(ownedWorldInfoIds);
 
     await _box.delete(id);
     state = state.where((c) => c.id != id).toList();
@@ -138,6 +180,146 @@ class CharacterListNotifier extends StateNotifier<List<Character>> {
     final activeId = ref.read(activeCharacterIdProvider);
     if (activeId == id) {
       ref.read(activeCharacterIdProvider.notifier).setActive(null);
+    }
+  }
+
+  /// 计算 [candidateIds] 中"不再被任何其它角色卡引用"的 ID。
+  ///
+  /// 同时检查字符串型 `worldInfoIds` / `regexScriptIds` 字段与原始卡片 JSON
+  /// （`rawCardData`），因为部分第三方卡片把绑定关系只写在原始数据里。
+  Set<String> _collectUnownedIds({
+    required String removingCharacterId,
+    required Iterable<String> candidateIds,
+    required Iterable<String> Function(Character character) selector,
+    Character? removingCharacter,
+  }) {
+    final normalized =
+        candidateIds.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet();
+    if (normalized.isEmpty) {
+      return <String>{};
+    }
+
+    final stillReferenced = <String>{};
+    for (final other in state) {
+      if (other.id == removingCharacterId) {
+        continue;
+      }
+      for (final ref_ in selector(other)) {
+        final value = ref_.trim();
+        if (value.isNotEmpty && normalized.contains(value)) {
+          stillReferenced.add(value);
+        }
+      }
+    }
+
+    // 本卡"引用"的全局正则不属于随卡数据，即便没有其它卡片引用也不能回收，
+    // 否则用户手动创建的全局脚本会被误删。
+    final referencedGlobalRegex = removingCharacter?.globalRegexIds ?? const [];
+    for (final globalRegexId in referencedGlobalRegex) {
+      final value = globalRegexId.trim();
+      if (value.isNotEmpty && normalized.contains(value)) {
+        stillReferenced.add(value);
+      }
+    }
+
+    for (final other in state) {
+      if (other.id == removingCharacterId) {
+        continue;
+      }
+      for (final value in _collectRawReferencedIds(other)) {
+        if (normalized.contains(value)) {
+          stillReferenced.add(value);
+        }
+      }
+    }
+
+    return normalized.difference(stillReferenced);
+  }
+
+  Set<String> _collectRawReferencedIds(Character character) {
+    final result = <String>{};
+    void visit(dynamic value, {int depth = 0}) {
+      if (depth > 8 || value == null) {
+        return;
+      }
+      if (value is String) {
+        final trimmed = value.trim();
+        if (trimmed.isNotEmpty) {
+          result.add(trimmed);
+        }
+        return;
+      }
+      if (value is Iterable) {
+        for (final item in value) {
+          visit(item, depth: depth + 1);
+        }
+        return;
+      }
+      if (value is Map) {
+        for (final entry in value.entries) {
+          visit(entry.value, depth: depth + 1);
+        }
+      }
+    }
+
+    final raw = character.rawCardData;
+    final data = raw['data'];
+    visit(data is Map ? data['character_book'] : raw['character_book'],
+        depth: 1);
+    final extensions = data is Map ? data['extensions'] : raw['extensions'];
+    visit(extensions is Map ? extensions['regex_scripts'] : null, depth: 1);
+    return result;
+  }
+
+  Future<Set<String>> _collectUnownedRegexIds({
+    required String removingCharacterId,
+    required Iterable<String> candidateIds,
+    Character? removingCharacter,
+  }) async {
+    return _collectUnownedIds(
+      removingCharacterId: removingCharacterId,
+      candidateIds: candidateIds,
+      selector: (character) => character.regexScriptIds,
+      removingCharacter: removingCharacter,
+    );
+  }
+
+  Future<Set<String>> _collectUnownedWorldInfoIds({
+    required String removingCharacterId,
+    required Iterable<String> candidateIds,
+    Character? removingCharacter,
+  }) async {
+    return _collectUnownedIds(
+      removingCharacterId: removingCharacterId,
+      candidateIds: candidateIds,
+      selector: (character) => character.worldInfoIds,
+      removingCharacter: removingCharacter,
+    );
+  }
+
+  Future<void> _removeFromActiveRegexIds(Set<String> ids) async {
+    if (ids.isEmpty) {
+      return;
+    }
+    final active = ref.read(activeRegexScriptIdsProvider);
+    final next = active.where((e) => !ids.contains(e)).toList();
+    if (next.length != active.length) {
+      final box = Hive.box('settings');
+      await box.put('active_regex_ids', next);
+      ref.invalidate(activeRegexScriptIdsProvider);
+    }
+  }
+
+  Future<void> _removeFromActiveWorldInfoIds(Set<String> ids) async {
+    if (ids.isEmpty) {
+      return;
+    }
+    final active = ref.read(activeWorldInfoIdsProvider);
+    final next = active.where((e) => !ids.contains(e)).toList();
+    if (next.length != active.length) {
+      final box = Hive.box('settings');
+      await box.put('active_world_info_ids', next);
+      ref.invalidate(activeWorldInfoIdsProvider);
     }
   }
 

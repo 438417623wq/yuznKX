@@ -148,7 +148,7 @@ class _WorldInfoEditScreenState extends ConsumerState<WorldInfoEditScreen> {
   @override
   void initState() {
     super.initState();
-    _nameController.text = widget.worldInfo?.name ?? 'New World Info';
+    _nameController.text = widget.worldInfo?.name ?? '新建世界书';
     _entries = widget.worldInfo?.entries.toList() ?? [];
   }
 
@@ -172,7 +172,7 @@ class _WorldInfoEditScreenState extends ConsumerState<WorldInfoEditScreen> {
         uid: DateTime.now().millisecondsSinceEpoch,
         keys: [],
         content: '',
-        comment: 'New Entry',
+        comment: '新条目',
       ));
     });
   }
@@ -232,52 +232,54 @@ class _WorldInfoEditScreenState extends ConsumerState<WorldInfoEditScreen> {
         _entries.where((entry) => !entry.preventRecursion).length;
 
     final positionCounts = <String, int>{
-      'Before Character': 0,
-      'After Character': 0,
-      'Before Author Note': 0,
-      'After Author Note': 0,
-      'At Depth': 0,
-      'Before Examples': 0,
-      'After Examples': 0,
-      'User Top': 0,
-      'Assistant Top': 0,
+      '角色描述之前 (Before Character)': 0,
+      '角色描述之后 (After Character)': 0,
+      '作者注释之前 (Before Author Note)': 0,
+      '作者注释之后 (After Author Note)': 0,
+      '指定深度 (At Depth)': 0,
+      '示例对话之前 (Before Examples)': 0,
+      '示例对话之后 (After Examples)': 0,
+      '用户消息顶部 (User Top)': 0,
+      'AI 消息顶部 (Assistant Top)': 0,
     };
 
     for (final entry in _entries) {
       switch (entry.position) {
         case 0:
-          positionCounts['Before Character'] =
-              (positionCounts['Before Character'] ?? 0) + 1;
+          positionCounts['角色描述之前 (Before Character)'] =
+              (positionCounts['角色描述之前 (Before Character)'] ?? 0) + 1;
           break;
         case 1:
-          positionCounts['After Character'] =
-              (positionCounts['After Character'] ?? 0) + 1;
+          positionCounts['角色描述之后 (After Character)'] =
+              (positionCounts['角色描述之后 (After Character)'] ?? 0) + 1;
           break;
         case 2:
-          positionCounts['Before Author Note'] =
-              (positionCounts['Before Author Note'] ?? 0) + 1;
+          positionCounts['作者注释之前 (Before Author Note)'] =
+              (positionCounts['作者注释之前 (Before Author Note)'] ?? 0) + 1;
           break;
         case 3:
-          positionCounts['After Author Note'] =
-              (positionCounts['After Author Note'] ?? 0) + 1;
+          positionCounts['作者注释之后 (After Author Note)'] =
+              (positionCounts['作者注释之后 (After Author Note)'] ?? 0) + 1;
           break;
         case 4:
-          positionCounts['At Depth'] = (positionCounts['At Depth'] ?? 0) + 1;
+          positionCounts['指定深度 (At Depth)'] =
+              (positionCounts['指定深度 (At Depth)'] ?? 0) + 1;
           break;
         case 5:
-          positionCounts['Before Examples'] =
-              (positionCounts['Before Examples'] ?? 0) + 1;
+          positionCounts['示例对话之前 (Before Examples)'] =
+              (positionCounts['示例对话之前 (Before Examples)'] ?? 0) + 1;
           break;
         case 6:
-          positionCounts['After Examples'] =
-              (positionCounts['After Examples'] ?? 0) + 1;
+          positionCounts['示例对话之后 (After Examples)'] =
+              (positionCounts['示例对话之后 (After Examples)'] ?? 0) + 1;
           break;
         case 7:
-          positionCounts['User Top'] = (positionCounts['User Top'] ?? 0) + 1;
+          positionCounts['用户消息顶部 (User Top)'] =
+              (positionCounts['用户消息顶部 (User Top)'] ?? 0) + 1;
           break;
         case 8:
-          positionCounts['Assistant Top'] =
-              (positionCounts['Assistant Top'] ?? 0) + 1;
+          positionCounts['AI 消息顶部 (Assistant Top)'] =
+              (positionCounts['AI 消息顶部 (Assistant Top)'] ?? 0) + 1;
           break;
       }
     }
@@ -286,12 +288,12 @@ class _WorldInfoEditScreenState extends ConsumerState<WorldInfoEditScreen> {
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
       children: [
         Text(
-          'Book Overview',
+          '世界书概览 (Book Overview)',
           style: Theme.of(context).textTheme.titleLarge,
         ),
         const SizedBox(height: 6),
         Text(
-          'A quick ST-style summary of this lorebook before you dive into individual entries.',
+          '按 SillyTavern 习惯汇总的本世界书统计信息，方便在逐条编辑条目之前快速掌握整体情况。',
           style: TextStyle(color: Colors.grey.shade700),
         ),
         const SizedBox(height: 16),
@@ -301,34 +303,34 @@ class _WorldInfoEditScreenState extends ConsumerState<WorldInfoEditScreen> {
           children: [
             _buildCountCard(
               context,
-              label: 'Total Entries',
+              label: '条目总数 (Total Entries)',
               value: '${_entries.length}',
               icon: Icons.library_books_outlined,
             ),
             _buildCountCard(
               context,
-              label: 'Disabled',
+              label: '已禁用 (Disabled)',
               value: '$disabledCount',
               icon: Icons.power_settings_new,
               color: Colors.grey,
             ),
             _buildCountCard(
               context,
-              label: 'Constant',
+              label: '常驻条目 (Constant)',
               value: '$constantCount',
               icon: Icons.push_pin_outlined,
               color: Colors.teal,
             ),
             _buildCountCard(
               context,
-              label: 'Regex',
+              label: '正则条目 (Regex)',
               value: '$regexCount',
               icon: Icons.code,
               color: Colors.deepOrange,
             ),
             _buildCountCard(
               context,
-              label: 'Recursing',
+              label: '可递归 (Recursing)',
               value: '$recursiveCount',
               icon: Icons.hub_outlined,
               color: Colors.indigo,
@@ -347,7 +349,7 @@ class _WorldInfoEditScreenState extends ConsumerState<WorldInfoEditScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Injection Positions',
+                '注入位置分布 (Injection Positions)',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 12),
@@ -385,12 +387,12 @@ class _WorldInfoEditScreenState extends ConsumerState<WorldInfoEditScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Current Book Notes',
+                '当前编辑器能力 (Current Book Notes)',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 12),
               Text(
-                'The current editor exposes ST-style advanced fields per entry, including secondary logic, depth placement, probability, timed effects, recursion behavior, and global scan scopes.',
+                '当前编辑器为每个条目提供完整的 SillyTavern 高级字段，包括：次级关键词逻辑、深度注入、触发概率、时效控制（常驻/冷却/延迟）、递归行为，以及全局扫描范围。',
                 style: TextStyle(color: Colors.grey.shade700, height: 1.45),
               ),
             ],
@@ -411,7 +413,7 @@ class _WorldInfoEditScreenState extends ConsumerState<WorldInfoEditScreen> {
           style: const TextStyle(color: Colors.black, fontSize: 20),
           decoration: const InputDecoration(
             border: InputBorder.none,
-            hintText: 'World Info Name',
+            hintText: '世界书名称',
           ),
         ),
         actions: [
@@ -422,13 +424,12 @@ class _WorldInfoEditScreenState extends ConsumerState<WorldInfoEditScreen> {
                 showDialog(
                   context: context,
                   builder: (ctx) => AlertDialog(
-                    title: const Text('Delete World Info?'),
-                    content: const Text(
-                        'This lorebook will be removed permanently.'),
+                    title: const Text('删除世界书？'),
+                    content: const Text('该世界书将被永久删除，此操作不可撤销。'),
                     actions: [
                       TextButton(
                         onPressed: () => Navigator.pop(ctx),
-                        child: const Text('Cancel'),
+                        child: const Text('取消'),
                       ),
                       TextButton(
                         onPressed: () {
@@ -439,7 +440,7 @@ class _WorldInfoEditScreenState extends ConsumerState<WorldInfoEditScreen> {
                           Navigator.pop(context);
                         },
                         child: const Text(
-                          'Delete',
+                          '删除',
                           style: TextStyle(color: Colors.red),
                         ),
                       ),
@@ -466,8 +467,8 @@ class _WorldInfoEditScreenState extends ConsumerState<WorldInfoEditScreen> {
               ),
               child: const TabBar(
                 tabs: [
-                  Tab(text: 'Entries'),
-                  Tab(text: 'Overview'),
+                  Tab(text: '条目 (Entries)'),
+                  Tab(text: '概览 (Overview)'),
                 ],
               ),
             ),
@@ -484,7 +485,7 @@ class _WorldInfoEditScreenState extends ConsumerState<WorldInfoEditScreen> {
                               child: TextField(
                                 controller: _searchController,
                                 decoration: InputDecoration(
-                                  hintText: 'Search entries...',
+                                  hintText: '搜索条目...',
                                   prefixIcon: const Icon(Icons.search),
                                   border: OutlineInputBorder(
                                     borderRadius: BorderRadius.circular(12),
@@ -502,7 +503,7 @@ class _WorldInfoEditScreenState extends ConsumerState<WorldInfoEditScreen> {
                             ElevatedButton.icon(
                               onPressed: _addEntry,
                               icon: const Icon(Icons.add),
-                              label: const Text('Add'),
+                              label: const Text('添加'),
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.green[50],
                                 foregroundColor: Colors.green[800],
@@ -712,7 +713,7 @@ class _WorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                       children: [
                         Text(
                             entry.comment.isEmpty
-                                ? 'Untitled Entry'
+                                ? '未命名条目'
                                 : entry.comment,
                             style: const TextStyle(
                                 fontWeight: FontWeight.bold, fontSize: 16)),
@@ -853,8 +854,7 @@ class _WorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                             ],
                             onChanged: (v) => _update(selectiveLogic: v),
                           ),
-                        ]
-                      ],
+                        ]                      ],
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -886,11 +886,39 @@ class _WorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                                 items: const [
                                   DropdownMenuItem(
                                       value: 0,
-                                      child: Text('前 (Before)',
+                                      child: Text('角色描述之前',
                                           style: TextStyle(fontSize: 12))),
                                   DropdownMenuItem(
                                       value: 1,
-                                      child: Text('后 (After)',
+                                      child: Text('角色描述之后',
+                                          style: TextStyle(fontSize: 12))),
+                                  DropdownMenuItem(
+                                      value: 2,
+                                      child: Text('作者注释之前',
+                                          style: TextStyle(fontSize: 12))),
+                                  DropdownMenuItem(
+                                      value: 3,
+                                      child: Text('作者注释之后',
+                                          style: TextStyle(fontSize: 12))),
+                                  DropdownMenuItem(
+                                      value: 4,
+                                      child: Text('指定深度',
+                                          style: TextStyle(fontSize: 12))),
+                                  DropdownMenuItem(
+                                      value: 5,
+                                      child: Text('示例对话之前',
+                                          style: TextStyle(fontSize: 12))),
+                                  DropdownMenuItem(
+                                      value: 6,
+                                      child: Text('示例对话之后',
+                                          style: TextStyle(fontSize: 12))),
+                                  DropdownMenuItem(
+                                      value: 7,
+                                      child: Text('用户消息顶部',
+                                          style: TextStyle(fontSize: 12))),
+                                  DropdownMenuItem(
+                                      value: 8,
+                                      child: Text('AI 消息顶部',
                                           style: TextStyle(fontSize: 12))),
                                 ],
                                 onChanged: (v) => _update(position: v),
@@ -900,14 +928,14 @@ class _WorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                                   Expanded(
                                       child: _buildMiniInput(
                                           entry.order.toString(),
-                                          'Order',
+                                          '顺序',
                                           (v) => _update(
                                               order: int.tryParse(v) ?? 0))),
                                   const SizedBox(width: 4),
                                   Expanded(
                                       child: _buildMiniInput(
                                           entry.depth.toString(),
-                                          'Depth',
+                                          '深度',
                                           (v) => _update(
                                               depth: int.tryParse(v) ?? 0))),
                                 ],
@@ -938,20 +966,20 @@ class _WorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                                   Expanded(
                                       child: _buildMiniInput(
                                           entry.sticky.toString(),
-                                          'Stick',
+                                          '常驻',
                                           (v) => _update(
                                               sticky: int.tryParse(v) ?? 0))),
                                   const SizedBox(width: 4),
                                   Expanded(
                                       child: _buildMiniInput(
                                           entry.cooldown.toString(),
-                                          'Cool',
+                                          '冷却',
                                           (v) => _update(
                                               cooldown: int.tryParse(v) ?? 0))),
                                 ],
                               ),
                               const SizedBox(height: 4),
-                              _buildMiniInput(entry.delay.toString(), 'Delay',
+                              _buildMiniInput(entry.delay.toString(), '延迟',
                                   (v) => _update(delay: int.tryParse(v) ?? 0)),
                             ],
                           ),
@@ -1117,7 +1145,7 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                       children: [
                         Text(
                           entry.comment.isEmpty
-                              ? 'Untitled Entry'
+                              ? '未命名条目'
                               : entry.comment,
                           style: const TextStyle(
                             fontWeight: FontWeight.bold,
@@ -1130,14 +1158,14 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                           runSpacing: 6,
                           children: [
                             _buildHeaderChip(_positionLabel(entry.position)),
-                            _buildHeaderChip('Order ${entry.order}'),
+                            _buildHeaderChip('顺序 ${entry.order}'),
                             if (entry.position == 4)
-                              _buildHeaderChip('Depth ${entry.depth}'),
+                              _buildHeaderChip('深度 ${entry.depth}'),
                             if (entry.position == 4)
                               _buildHeaderChip(_roleLabel(entry.role)),
-                            if (entry.constant) _buildHeaderChip('Constant'),
-                            if (entry.useRegex) _buildHeaderChip('Regex'),
-                            if (entry.disable) _buildHeaderChip('Disabled'),
+                            if (entry.constant) _buildHeaderChip('常驻'),
+                            if (entry.useRegex) _buildHeaderChip('正则'),
+                            if (entry.disable) _buildHeaderChip('已禁用'),
                           ],
                         ),
                         if (entry.keys.isNotEmpty) ...[
@@ -1170,7 +1198,7 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                 children: [
                   _buildSection(
                     context,
-                    title: 'Basic',
+                    title: '基础 (Basic)',
                     icon: Icons.description_outlined,
                     initiallyExpanded: true,
                     children: [
@@ -1181,7 +1209,8 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                           SizedBox(
                             width: 280,
                             child: _buildTextField(
-                              label: 'Name / Comment',
+                              label: '名称 / 注释 (Name / Comment)',
+                              helper: '仅用于标识条目，不会注入给模型。',
                               initialValue: entry.comment,
                               onChanged: (v) => _update(comment: v),
                             ),
@@ -1189,7 +1218,8 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                           SizedBox(
                             width: 220,
                             child: _buildTextField(
-                              label: 'Group',
+                              label: '分组 (Group)',
+                              helper: '同组条目用于互斥/权重抽取。',
                               initialValue: entry.group,
                               onChanged: (v) => _update(group: v),
                             ),
@@ -1198,7 +1228,8 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                       ),
                       const SizedBox(height: 12),
                       _buildTextField(
-                        label: 'Content',
+                        label: '内容 (Content)',
+                        helper: '触发后真正注入给模型的世界书正文。',
                         initialValue: entry.content,
                         maxLines: 6,
                         onChanged: (v) => _update(content: v),
@@ -1208,14 +1239,13 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                   const SizedBox(height: 12),
                   _buildSection(
                     context,
-                    title: 'Trigger',
+                    title: '触发条件 (Trigger)',
                     icon: Icons.key_outlined,
                     initiallyExpanded: true,
                     children: [
                       _buildTextField(
-                        label: 'Primary Keys',
-                        helper:
-                            'Comma separated. Empty keys are ignored. Constant entries can stay empty.',
+                        label: '主触发词 (Primary Keys)',
+                        helper: '逗号分隔；空关键词会被忽略。常驻条目可以留空。',
                         initialValue: entry.keys.join(', '),
                         onChanged: (v) => _update(keys: _parseCsv(v)),
                       ),
@@ -1225,32 +1255,32 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                         runSpacing: 12,
                         children: [
                           _buildToggleTile(
-                            title: 'Constant',
-                            subtitle: 'Always activate without key scanning.',
+                            title: '常驻 (Constant)',
+                            subtitle: '无需关键词扫描，始终激活注入。',
                             value: entry.constant,
                             onChanged: (v) => _update(constant: v),
                           ),
                           _buildToggleTile(
-                            title: 'Regex',
-                            subtitle: 'Use regular expression matching.',
+                            title: '正则匹配 (Regex)',
+                            subtitle: '用正则表达式匹配关键词。',
                             value: entry.useRegex,
                             onChanged: (v) => _update(useRegex: v),
                           ),
                           _buildToggleTile(
-                            title: 'Case Sensitive',
-                            subtitle: 'Respect upper/lower case.',
+                            title: '区分大小写 (Case Sensitive)',
+                            subtitle: '匹配时区分英文大小写。',
                             value: entry.caseSensitive,
                             onChanged: (v) => _update(caseSensitive: v),
                           ),
                           _buildToggleTile(
-                            title: 'Whole Words',
-                            subtitle: 'Match only full words.',
+                            title: '全词匹配 (Whole Words)',
+                            subtitle: '仅匹配完整单词，避免部分命中。',
                             value: entry.matchWholeWords,
                             onChanged: (v) => _update(matchWholeWords: v),
                           ),
                           _buildToggleTile(
-                            title: 'Secondary Logic',
-                            subtitle: 'Enable secondary-key filtering.',
+                            title: '次级关键词 (Secondary Logic)',
+                            subtitle: '启用次级关键词过滤条件。',
                             value: entry.selective,
                             onChanged: (v) => _update(selective: v),
                           ),
@@ -1259,32 +1289,32 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                       if (entry.selective) ...[
                         const SizedBox(height: 12),
                         _buildTextField(
-                          label: 'Secondary Keys',
-                          helper: 'Comma separated secondary keys.',
+                          label: '次级触发词 (Secondary Keys)',
+                          helper: '逗号分隔的次级关键词。',
                           initialValue: entry.secondaryKeys.join(', '),
                           onChanged: (v) =>
                               _update(secondaryKeys: _parseCsv(v)),
                         ),
                         const SizedBox(height: 12),
                         _buildDropdownField<int>(
-                          label: 'Secondary Logic Mode',
+                          label: '次级逻辑模式 (Secondary Logic Mode)',
                           value: _normalizeSelectiveLogic(entry.selectiveLogic),
                           items: const [
                             DropdownMenuItem(
                               value: 0,
-                              child: Text('Primary + any secondary'),
+                              child: Text('主词满足 + 任一 次级词 (AND ANY)'),
                             ),
                             DropdownMenuItem(
                               value: 1,
-                              child: Text('Primary + all secondary'),
+                              child: Text('主词满足 + 全部 次级词 (AND ALL)'),
                             ),
                             DropdownMenuItem(
                               value: 2,
-                              child: Text('Primary + none secondary'),
+                              child: Text('主词满足 + 不含 次级词 (NOT ANY)'),
                             ),
                             DropdownMenuItem(
                               value: 3,
-                              child: Text('Primary + not all secondary'),
+                              child: Text('主词满足 + 非全部 次级词 (NOT ALL)'),
                             ),
                           ],
                           onChanged: (v) => _update(selectiveLogic: v),
@@ -1295,7 +1325,7 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                   const SizedBox(height: 12),
                   _buildSection(
                     context,
-                    title: 'Injection',
+                    title: '注入 (Injection)',
                     icon: Icons.input_outlined,
                     children: [
                       Wrap(
@@ -1305,44 +1335,44 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                           SizedBox(
                             width: 260,
                             child: _buildDropdownField<int>(
-                              label: 'Position',
+                              label: '注入位置 (Position)',
                               value: _normalizePosition(entry.position),
                               items: const [
                                 DropdownMenuItem(
                                   value: 0,
-                                  child: Text('Before Character'),
+                                  child: Text('角色描述之前 (Before Character)'),
                                 ),
                                 DropdownMenuItem(
                                   value: 1,
-                                  child: Text('After Character'),
+                                  child: Text('角色描述之后 (After Character)'),
                                 ),
                                 DropdownMenuItem(
                                   value: 2,
-                                  child: Text('Before Author Note'),
+                                  child: Text('作者注释之前 (Before Author Note)'),
                                 ),
                                 DropdownMenuItem(
                                   value: 3,
-                                  child: Text('After Author Note'),
+                                  child: Text('作者注释之后 (After Author Note)'),
                                 ),
                                 DropdownMenuItem(
                                   value: 4,
-                                  child: Text('At Depth'),
+                                  child: Text('指定深度 (At Depth)'),
                                 ),
                                 DropdownMenuItem(
                                   value: 5,
-                                  child: Text('Before Examples'),
+                                  child: Text('示例对话之前 (Before Examples)'),
                                 ),
                                 DropdownMenuItem(
                                   value: 6,
-                                  child: Text('After Examples'),
+                                  child: Text('示例对话之后 (After Examples)'),
                                 ),
                                 DropdownMenuItem(
                                   value: 7,
-                                  child: Text('User Top'),
+                                  child: Text('用户消息顶部 (User Top)'),
                                 ),
                                 DropdownMenuItem(
                                   value: 8,
-                                  child: Text('Assistant Top'),
+                                  child: Text('AI 消息顶部 (Assistant Top)'),
                                 ),
                               ],
                               onChanged: (v) => _update(position: v),
@@ -1351,20 +1381,20 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                           SizedBox(
                             width: 180,
                             child: _buildDropdownField<String>(
-                              label: 'Role',
+                              label: '角色 (Role)',
                               value: _normalizeRole(entry.role),
                               items: const [
                                 DropdownMenuItem(
                                   value: 'system',
-                                  child: Text('System'),
+                                  child: Text('系统 (System)'),
                                 ),
                                 DropdownMenuItem(
                                   value: 'user',
-                                  child: Text('User'),
+                                  child: Text('用户 (User)'),
                                 ),
                                 DropdownMenuItem(
                                   value: 'assistant',
-                                  child: Text('Assistant'),
+                                  child: Text('AI (Assistant)'),
                                 ),
                               ],
                               onChanged: (v) => _update(role: v),
@@ -1373,7 +1403,8 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                           SizedBox(
                             width: 140,
                             child: _buildNumberField(
-                              label: 'Order',
+                              label: '顺序 (Order)',
+                              helper: '数字越大越靠前注入。',
                               value: entry.order,
                               onChanged: (v) => _update(order: v),
                             ),
@@ -1381,7 +1412,8 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                           SizedBox(
                             width: 140,
                             child: _buildNumberField(
-                              label: 'Depth',
+                              label: '深度 (Depth)',
+                              helper: '仅"指定深度"位置生效。',
                               value: entry.depth,
                               onChanged: (v) => _update(depth: v),
                             ),
@@ -1389,10 +1421,10 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                           SizedBox(
                             width: 160,
                             child: _buildNumberField(
-                              label: 'Scan Depth',
+                              label: '扫描深度 (Scan Depth)',
                               value: entry.scanDepth,
                               allowBlank: true,
-                              helper: 'Blank uses default scan depth.',
+                              helper: '留空则使用全局默认扫描深度。',
                               onChanged: (v) => _update(
                                 scanDepth: v,
                                 clearScanDepth: v == null,
@@ -1406,7 +1438,7 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                   const SizedBox(height: 12),
                   _buildSection(
                     context,
-                    title: 'Effects',
+                    title: '效果与时效 (Effects)',
                     icon: Icons.tune_outlined,
                     children: [
                       Wrap(
@@ -1414,33 +1446,32 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                         runSpacing: 12,
                         children: [
                           _buildToggleTile(
-                            title: 'Use Probability',
-                            subtitle: 'Gate activation by probability.',
+                            title: '启用概率 (Use Probability)',
+                            subtitle: '按设定概率决定是否激活。',
                             value: entry.useProbability,
                             onChanged: (v) => _update(useProbability: v),
                           ),
                           _buildToggleTile(
-                            title: 'Group Override',
-                            subtitle: 'Force this entry to win inside group.',
+                            title: '分组强制 (Group Override)',
+                            subtitle: '强制该条目在同组中胜出。',
                             value: entry.groupOverride,
                             onChanged: (v) => _update(groupOverride: v),
                           ),
                           _buildToggleTile(
-                            title: 'Exclude Recursion',
-                            subtitle: 'Skip this entry on recursion passes.',
+                            title: '排除递归 (Exclude Recursion)',
+                            subtitle: '递归扫描时跳过该条目。',
                             value: entry.excludeRecursion,
                             onChanged: (v) => _update(excludeRecursion: v),
                           ),
                           _buildToggleTile(
-                            title: 'Prevent Recursion',
-                            subtitle:
-                                'Do not add this content back to scan buffer.',
+                            title: '阻止递归 (Prevent Recursion)',
+                            subtitle: '不把该内容加入后续扫描缓冲。',
                             value: entry.preventRecursion,
                             onChanged: (v) => _update(preventRecursion: v),
                           ),
                           _buildToggleTile(
-                            title: 'Ignore Budget',
-                            subtitle: 'Allow activation even past WI budget.',
+                            title: '忽略预算 (Ignore Budget)',
+                            subtitle: '即使超出世界书预算也允许激活。',
                             value: entry.ignoreBudget,
                             onChanged: (v) => _update(ignoreBudget: v),
                           ),
@@ -1454,7 +1485,8 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                           SizedBox(
                             width: 140,
                             child: _buildNumberField(
-                              label: 'Sticky',
+                              label: '常驻轮数 (Sticky)',
+                              helper: '激活后继续保留的轮数。',
                               value: entry.sticky,
                               onChanged: (v) => _update(sticky: v ?? 0),
                             ),
@@ -1462,7 +1494,8 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                           SizedBox(
                             width: 140,
                             child: _buildNumberField(
-                              label: 'Cooldown',
+                              label: '冷却轮数 (Cooldown)',
+                              helper: '激活后禁止再次触发的轮数。',
                               value: entry.cooldown,
                               onChanged: (v) => _update(cooldown: v ?? 0),
                             ),
@@ -1470,7 +1503,8 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                           SizedBox(
                             width: 140,
                             child: _buildNumberField(
-                              label: 'Delay',
+                              label: '延迟轮数 (Delay)',
+                              helper: '满足条件后延迟触发的轮数。',
                               value: entry.delay,
                               onChanged: (v) => _update(delay: v ?? 0),
                             ),
@@ -1478,7 +1512,8 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                           SizedBox(
                             width: 180,
                             child: _buildNumberField(
-                              label: 'Delay Until Recursion',
+                              label: '递归延迟 (Delay Until Recursion)',
+                              helper: '递归到指定层数才允许激活。',
                               value: entry.delayUntilRecursion,
                               onChanged: (v) =>
                                   _update(delayUntilRecursion: v ?? 0),
@@ -1487,7 +1522,8 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                           SizedBox(
                             width: 150,
                             child: _buildNumberField(
-                              label: 'Group Weight',
+                              label: '分组权重 (Group Weight)',
+                              helper: '同组抽取时的权重值。',
                               value: entry.groupWeight,
                               onChanged: (v) => _update(groupWeight: v ?? 0),
                             ),
@@ -1499,14 +1535,14 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                         children: [
                           Expanded(
                             child: Text(
-                              'Probability: ${entry.probability}%',
+                              '触发概率: ${entry.probability}%',
                               style: Theme.of(context).textTheme.bodyMedium,
                             ),
                           ),
                           SizedBox(
                             width: 96,
                             child: _buildNumberField(
-                              label: 'Percent',
+                              label: '百分比',
                               value: entry.probability,
                               onChanged: (v) => _update(
                                 probability: (v ?? 100).clamp(0, 100),
@@ -1532,51 +1568,57 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
                   const SizedBox(height: 12),
                   _buildSection(
                     context,
-                    title: 'Scan Scope',
+                    title: '扫描范围 (Scan Scope)',
                     icon: Icons.travel_explore_outlined,
                     children: [
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          '控制关键词除了聊天记录之外，还会在哪些角色卡/预设文本中查找。',
+                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                      ),
                       Wrap(
                         spacing: 12,
                         runSpacing: 12,
                         children: [
                           _buildToggleTile(
-                            title: 'Persona Description',
-                            subtitle: 'Scan the active persona description.',
+                            title: '用户人设描述 (Persona Description)',
+                            subtitle: '在用户人设描述中扫描关键词。',
                             value: entry.matchPersonaDescription,
                             onChanged: (v) =>
                                 _update(matchPersonaDescription: v),
                           ),
                           _buildToggleTile(
-                            title: 'Character Description',
-                            subtitle: 'Scan character description.',
+                            title: '角色描述 (Character Description)',
+                            subtitle: '在角色卡描述中扫描关键词。',
                             value: entry.matchCharacterDescription,
                             onChanged: (v) =>
                                 _update(matchCharacterDescription: v),
                           ),
                           _buildToggleTile(
-                            title: 'Character Personality',
-                            subtitle:
-                                'Scan character personality / system text.',
+                            title: '角色性格 (Character Personality)',
+                            subtitle: '在角色性格/系统提示词中扫描关键词。',
                             value: entry.matchCharacterPersonality,
                             onChanged: (v) =>
                                 _update(matchCharacterPersonality: v),
                           ),
                           _buildToggleTile(
-                            title: 'Character Depth Prompt',
-                            subtitle: 'Scan author note / depth prompt.',
+                            title: '深度提示词 (Character Depth Prompt)',
+                            subtitle: '在作者注释/深度提示词中扫描关键词。',
                             value: entry.matchCharacterDepthPrompt,
                             onChanged: (v) =>
                                 _update(matchCharacterDepthPrompt: v),
                           ),
                           _buildToggleTile(
-                            title: 'Scenario',
-                            subtitle: 'Scan scenario text.',
+                            title: '场景设定 (Scenario)',
+                            subtitle: '在场景设定文本中扫描关键词。',
                             value: entry.matchScenario,
                             onChanged: (v) => _update(matchScenario: v),
                           ),
                           _buildToggleTile(
-                            title: 'Creator Notes',
-                            subtitle: 'Scan creator notes.',
+                            title: '作者备注 (Creator Notes)',
+                            subtitle: '在作者备注中扫描关键词。',
                             value: entry.matchCreatorNotes,
                             onChanged: (v) => _update(matchCreatorNotes: v),
                           ),
@@ -1760,36 +1802,36 @@ class _AdvancedWorldInfoEntryCardState extends State<WorldInfoEntryCard> {
   String _positionLabel(int position) {
     switch (_normalizePosition(position)) {
       case 0:
-        return 'Before Character';
+        return '角色描述之前';
       case 1:
-        return 'After Character';
+        return '角色描述之后';
       case 2:
-        return 'Before Author Note';
+        return '作者注释之前';
       case 3:
-        return 'After Author Note';
+        return '作者注释之后';
       case 4:
-        return 'At Depth';
+        return '指定深度';
       case 5:
-        return 'Before Examples';
+        return '示例对话之前';
       case 6:
-        return 'After Examples';
+        return '示例对话之后';
       case 7:
-        return 'User Top';
+        return '用户消息顶部';
       case 8:
-        return 'Assistant Top';
+        return 'AI 消息顶部';
       default:
-        return 'Before Character';
+        return '角色描述之前';
     }
   }
 
   String _roleLabel(String role) {
     switch (_normalizeRole(role)) {
       case 'user':
-        return 'User';
+        return '用户';
       case 'assistant':
-        return 'Assistant';
+        return 'AI';
       default:
-        return 'System';
+        return '系统';
     }
   }
 

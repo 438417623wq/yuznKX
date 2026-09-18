@@ -126,7 +126,7 @@ class _RegexEditScreenState extends ConsumerState<RegexEditScreen> {
   void initState() {
     super.initState();
     final s = widget.script;
-    _nameCtrl.text = s?.scriptName ?? 'New Regex';
+    _nameCtrl.text = s?.scriptName ?? '新建正则';
     _regexCtrl.text = s?.findRegex ?? '';
     _replaceCtrl.text = s?.replaceString ?? '';
     _trimCtrl.text = s?.trimString ?? '';
@@ -193,7 +193,7 @@ class _RegexEditScreenState extends ConsumerState<RegexEditScreen> {
           TextField(
             controller: _nameCtrl, 
             decoration: InputDecoration(
-              hintText: 'New Regex', 
+              hintText: '输入正则脚本名称', 
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
               contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
             ),
@@ -213,7 +213,7 @@ class _RegexEditScreenState extends ConsumerState<RegexEditScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Center(
-                  child: Text('REGULAR EXPRESSION', 
+                  child: Text('正则表达式 (REGULAR EXPRESSION)', 
                     style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.indigo.shade700, letterSpacing: 1.0)
                   ),
                 ),
@@ -234,7 +234,7 @@ class _RegexEditScreenState extends ConsumerState<RegexEditScreen> {
                 _buildLabel('修剪掉 (TRIM STRINGS)'),
                 TextField(
                   controller: _trimCtrl, 
-                  decoration: _buildInputDecoration('One string per line to remove...'),
+                  decoration: _buildInputDecoration('每行一个要去除的字符串...'),
                   maxLines: 2,
                 ),
               ],
@@ -289,14 +289,16 @@ class _RegexEditScreenState extends ConsumerState<RegexEditScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildLabel('正则查找时的宏 (SUBSTITUTE REGEX)'),
+                _buildLabel('正则查找时的宏替换 (SUBSTITUTE REGEX)'),
                 DropdownButtonFormField<int>(
                   value: _substituteRegex,
                   decoration: _buildInputDecoration(''),
                   items: const [
                     DropdownMenuItem(value: 0, child: Text('不替换 (None)')),
-                    DropdownMenuItem(value: 1, child: Text('User Name')),
-                    DropdownMenuItem(value: 2, child: Text('Character Name')),
+                    DropdownMenuItem(
+                        value: 1, child: Text('用户名 (User Name)')),
+                    DropdownMenuItem(
+                        value: 2, child: Text('角色名 (Character Name)')),
                   ],
                   onChanged: (v) => setState(() => _substituteRegex = v ?? 0),
                 ),
