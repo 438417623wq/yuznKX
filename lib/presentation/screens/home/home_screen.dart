@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../features/chat/presentation/screens/chat_screen.dart';
+import '../../../features/memory/presentation/memory_theme.dart';
 import '../../../features/memory/presentation/screens/memory_management_screen.dart';
 import '../settings/settings_screen.dart';
 
@@ -14,18 +15,21 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   int _currentIndex = 0;
 
-  final List<Widget> _screens = const [
-    ChatScreen(),
-    MemoryManagementScreen(),
-    SettingsScreen(),
-  ];
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: IndexedStack(
         index: _currentIndex,
-        children: _screens,
+        children: [
+          const ChatScreen(),
+          // 记忆页挂局部主题：colorScheme.primary 换成青绿，
+          // 页内弹窗的 FilledButton / Switch 等不再漏出全局 indigo。
+          Theme(
+            data: MemoryTheme.themeData(Theme.of(context)),
+            child: const MemoryManagementScreen(),
+          ),
+          const SettingsScreen(),
+        ],
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,

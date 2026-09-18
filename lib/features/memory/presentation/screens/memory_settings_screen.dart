@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../chat/data/session_provider.dart';
 import '../../data/memory_provider.dart';
+import '../memory_theme.dart';
+import '../widgets/memory_injection_preview.dart';
 
 /// 记忆系统设置页。
 ///
@@ -12,9 +14,9 @@ import '../../data/memory_provider.dart';
 class MemorySettingsScreen extends ConsumerWidget {
   const MemorySettingsScreen({super.key});
 
-  static const Color _accent = Color(0xFF24C3B5);
-  static const Color _bg = Color(0xFF081015);
-  static const Color _card = Color(0xFF0E1A21);
+  static const Color _accent = MemoryTheme.accent;
+  static const Color _bg = MemoryTheme.bg;
+  static const Color _card = MemoryTheme.surface;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -26,7 +28,7 @@ class MemorySettingsScreen extends ConsumerWidget {
       backgroundColor: _bg,
       appBar: AppBar(
         title: const Text('记忆设置'),
-        backgroundColor: const Color(0xFF0E1A21),
+        backgroundColor: MemoryTheme.appBar,
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
@@ -50,7 +52,7 @@ class MemorySettingsScreen extends ConsumerWidget {
                 onChanged: (value) =>
                     notifier.patch(isPluginEnabled: value),
               ),
-              const Divider(color: Colors.white12, height: 1),
+              const Divider(color: MemoryTheme.divider, height: 1),
               SwitchListTile.adaptive(
                 contentPadding: EdgeInsets.zero,
                 title: const Text(
@@ -67,7 +69,7 @@ class MemorySettingsScreen extends ConsumerWidget {
                     ? (value) => notifier.patch(isAiReadTable: value)
                     : null,
               ),
-              const Divider(color: Colors.white12, height: 1),
+              const Divider(color: MemoryTheme.divider, height: 1),
               SwitchListTile.adaptive(
                 contentPadding: EdgeInsets.zero,
                 title: const Text(
@@ -100,7 +102,7 @@ class MemorySettingsScreen extends ConsumerWidget {
                         const Expanded(
                           child: Text(
                             '注入深度 (Injection Depth)',
-                            style: TextStyle(color: Colors.white, fontSize: 14),
+                            style: TextStyle(color: Colors.white, fontSize: 15),
                           ),
                         ),
                         Text(
@@ -114,7 +116,8 @@ class MemorySettingsScreen extends ConsumerWidget {
                     ),
                     const SizedBox(height: 2),
                     const Text(
-                      '记忆块插入到对话历史中的位置，数值越大越靠近最近的消息。',
+                      '记忆块默认经预设的 vectorsMemory 槽位注入；预设里缺少该槽位时，'
+                      '按此深度兜底补注入。数值越大越靠近最近的消息。',
                       style: TextStyle(color: Colors.white60, fontSize: 12),
                     ),
                     Slider(
@@ -144,7 +147,7 @@ class MemorySettingsScreen extends ConsumerWidget {
                   style: TextStyle(color: Colors.white),
                 ),
                 subtitle: const Text(
-                  'AI 将仅看到指定范围内的历史记录。',
+                  'AI 将仅看到指定范围内的历史记录。开启「保留最新消息」时本项会被忽略。',
                   style: TextStyle(color: Colors.white60, fontSize: 12),
                 ),
                 value: settings.isHistoryRangeLimitEnabled,
@@ -161,8 +164,12 @@ class MemorySettingsScreen extends ConsumerWidget {
                   children: [
                     Expanded(
                       child: TextFormField(
-                        key: ValueKey(
-                            'start_floor_${settings.historyRangeStartFloor}_${settings.isHistoryRangeLimitEnabled}_$pluginEnabled'),
+                        // ⛔ key 里**不能**带楼层值！旧实现是
+                        // `'start_floor_${settings.historyRangeStartFloor}_...'`，
+                        // 于是每敲一个字符 → state 变 → key 变 → TextFormField
+                        // 被整体重建 → **光标跳到末尾**，无法在中间插入修改。
+                        // key 只需保证「启用态切换时强制刷新 initialValue」即可。
+                        key: const ValueKey('start_floor'),
                         initialValue:
                             settings.historyRangeStartFloor.toString(),
                         enabled:
@@ -187,8 +194,7 @@ class MemorySettingsScreen extends ConsumerWidget {
                     const SizedBox(width: 10),
                     Expanded(
                       child: TextFormField(
-                        key: ValueKey(
-                            'end_floor_${settings.historyRangeEndFloor}_${settings.isHistoryRangeLimitEnabled}_$pluginEnabled'),
+                        key: const ValueKey('end_floor'),
                         initialValue: settings.historyRangeEndFloor.toString(),
                         enabled:
                             pluginEnabled && settings.isHistoryRangeLimitEnabled,
@@ -217,7 +223,7 @@ class MemorySettingsScreen extends ConsumerWidget {
                 child: Text(
                   '聊天消息楼层从 #0 开始，-1 表示最新。当前用户消息始终包含在可见范围内。',
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.5),
+                    color: Colors.white.withValues(alpha: 0.5),
                     fontSize: 12,
                     height: 1.5,
                   ),
@@ -236,7 +242,8 @@ class MemorySettingsScreen extends ConsumerWidget {
                   style: TextStyle(color: Colors.white),
                 ),
                 subtitle: const Text(
-                  '开启后仅保留最近 N 条消息，其余楼层对 AI 不可见。',
+                  '开启后仅保留最近 N 条消息，其余楼层对 AI 不可见。'
+                  '优先级高于「聊天记录可见性」，同时开启时范围限制会被忽略。',
                   style: TextStyle(color: Colors.white60, fontSize: 12),
                 ),
                 value: settings.isKeepLatestEnabled,
@@ -256,7 +263,7 @@ class MemorySettingsScreen extends ConsumerWidget {
                         const Expanded(
                           child: Text(
                             '保留条数 (Floors)',
-                            style: TextStyle(color: Colors.white, fontSize: 14),
+                            style: TextStyle(color: Colors.white, fontSize: 15),
                           ),
                         ),
                         Text(
@@ -287,7 +294,7 @@ class MemorySettingsScreen extends ConsumerWidget {
                     Text(
                       '当前保留最近 ${settings.keepLatestFloors} 条聊天楼层。',
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.6),
+                        color: Colors.white.withValues(alpha: 0.6),
                         fontSize: 12,
                       ),
                     ),
@@ -296,8 +303,69 @@ class MemorySettingsScreen extends ConsumerWidget {
               ),
             ],
           ),
+          const SizedBox(height: 12),
+          _buildInjectionPreviewSection(context, ref),
         ],
       ),
+    );
+  }
+
+  /// 注入预览：把当前会话**实际会送给模型**的记忆文本原样展示出来。
+  ///
+  /// 为什么需要它：记忆块经预设的 `vectorsMemory` 槽位注入，槽位缺失时才走
+  /// `memory_fallback` 兜底。过去这条链路对用户完全不可见 —— 一旦记忆没生效，
+  /// 只能猜。这里让「模型到底看到了什么」变成可自查的事实。
+  Widget _buildInjectionPreviewSection(BuildContext context, WidgetRef ref) {
+    final settings = ref.watch(memoryPluginSettingsProvider);
+    final tableCount = ref.watch(memoryProvider).length;
+
+    return _buildSection(
+      title: '注入预览 (Injection Preview)',
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: Text(
+            '查看当前会话实际发送给模型的内存文本。'
+            '若此处为空，说明没有表格参与注入或「AI 读取记忆」已关闭。',
+            style: TextStyle(
+              color: Colors.white60,
+              fontSize: 12,
+              height: 1.5,
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+          child: SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () => showMemoryInjectionPreview(context, ref),
+              icon: const Icon(Icons.visibility_outlined, size: 18),
+              label: Text(
+                tableCount == 0
+                    ? '预览注入内容（当前无表格）'
+                    : '预览注入内容（$tableCount 张表）',
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: _accent,
+                side: const BorderSide(color: _accent),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+          ),
+        ),
+        if (!settings.isAiReadTable)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 14),
+            child: Text(
+              '⚠️ 「AI 读取记忆表格」当前已关闭，注入内容将为空。',
+              style: TextStyle(color: MemoryTheme.warning, fontSize: 12),
+            ),
+          ),
+      ],
     );
   }
 
@@ -352,7 +420,7 @@ class MemorySettingsScreen extends ConsumerWidget {
       decoration: BoxDecoration(
         color: _card,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0x33FFFFFF)),
+        border: Border.all(color: MemoryTheme.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -375,26 +443,6 @@ class MemorySettingsScreen extends ConsumerWidget {
   }
 
   InputDecoration _fieldDecoration(String label) {
-    return InputDecoration(
-      labelText: label,
-      labelStyle: const TextStyle(color: Colors.white70, fontSize: 12),
-      filled: true,
-      fillColor: const Color(0x3320303A),
-      isDense: true,
-      contentPadding:
-          const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
-        borderSide: const BorderSide(color: Colors.white24),
-      ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
-        borderSide: const BorderSide(color: Colors.white24),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
-        borderSide: const BorderSide(color: _accent),
-      ),
-    );
+    return MemoryTheme.fieldDecoration(label, dense: true);
   }
 }

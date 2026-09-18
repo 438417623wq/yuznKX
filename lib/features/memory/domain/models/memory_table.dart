@@ -45,8 +45,8 @@ class MemoryColumn {
     return MemoryColumn(
       key: _buildColumnKey(safeLabel, index),
       label: safeLabel,
-      multiline: safeLabel.contains('描述') || safeLabel.contains('备注'),
-      width: safeLabel.length > 8 ? 220 : 180,
+      multiline: looksLikeLongText(safeLabel),
+      width: estimateColumnWidth(safeLabel),
     );
   }
 
@@ -115,17 +115,29 @@ class MemoryRow {
         'updatedAt': updatedAt.toIso8601String(),
       };
 
+  /// 复制一份记录。
+  ///
+  /// [touchUpdatedAt] 决定是否刷新 `updatedAt`：
+  /// - `true`（默认）→ 视为**内容变更**，时间戳刷新为当前时间；
+  /// - `false` → 视为**非内容变更**（如仅切换启用状态、批量维护），时间戳保持原样。
+  ///
+  /// 为什么需要这个开关：旧实现无条件写 `updatedAt ?? DateTime.now()`，
+  /// 于是 `toggleRow` 这种只切开关的操作也会被标记成「刚刚更新」，
+  /// 让「N 分钟前更新」这类展示彻底失真。
   MemoryRow copyWith({
     Map<String, dynamic>? data,
     bool? isEnabled,
     DateTime? updatedAt,
+    bool touchUpdatedAt = true,
   }) {
     return MemoryRow(
       id: id,
       data: data ?? this.data,
       isEnabled: isEnabled ?? this.isEnabled,
       createdAt: createdAt,
-      updatedAt: updatedAt ?? DateTime.now(),
+      updatedAt: !touchUpdatedAt
+          ? this.updatedAt
+          : (updatedAt ?? DateTime.now()),
     );
   }
 }
@@ -143,6 +155,19 @@ class MemoryTableStyle {
   final String rowColor; // Hex
   final String alternateRowColor; // Hex
 
+  /// 默认配色与全局主题（0xFF1A1B26 蓝紫系）同族，青绿仅作强调。
+  static const String defaultAccentColor = '#24C3B5';
+  static const String defaultHeaderColor = '#26273A';
+  static const String defaultRowColor = '#232433';
+  static const String defaultAlternateRowColor = '#1E1F2C';
+
+  // 旧版（青黑系）默认值。样式色值随表格持久化，老会话的 JSON 里存的就是
+  // 这些；解析时原样保留会让旧数据在新配色界面上变成突兀的深青块，
+  // 所以按值迁移到新默认色。用户自定义过的颜色不会命中映射，不受影响。
+  static const String _legacyHeaderColor = '#162831';
+  static const String _legacyRowColor = '#0E151A';
+  static const String _legacyAlternateRowColor = '#111E24';
+
   const MemoryTableStyle({
     this.compact = false,
     this.striped = true,
@@ -151,10 +176,10 @@ class MemoryTableStyle {
     this.maxCellLines = 2,
     this.rowHeight = 56,
     this.columnSpacing = 20,
-    this.accentColor = '#24C3B5',
-    this.headerColor = '#162831',
-    this.rowColor = '#0E151A',
-    this.alternateRowColor = '#111E24',
+    this.accentColor = defaultAccentColor,
+    this.headerColor = defaultHeaderColor,
+    this.rowColor = defaultRowColor,
+    this.alternateRowColor = defaultAlternateRowColor,
   });
 
   factory MemoryTableStyle.fromJson(Map<String, dynamic>? json) {
@@ -170,14 +195,35 @@ class MemoryTableStyle {
       maxCellLines: _asInt(json['maxCellLines'])?.clamp(1, 8) ?? 2,
       rowHeight: _asDouble(json['rowHeight'])?.clamp(40, 88) ?? 56,
       columnSpacing: _asDouble(json['columnSpacing'])?.clamp(8, 48) ?? 20,
-      accentColor:
-          _normalizeHex((json['accentColor'] ?? '').toString(), '#24C3B5'),
-      headerColor:
-          _normalizeHex((json['headerColor'] ?? '').toString(), '#162831'),
-      rowColor: _normalizeHex((json['rowColor'] ?? '').toString(), '#0E151A'),
-      alternateRowColor: _normalizeHex(
-          (json['alternateRowColor'] ?? '').toString(), '#111E24'),
+      accentColor: _normalizeHex((json['accentColor'] ?? '').toString(),
+          defaultAccentColor),
+      headerColor: _migrateLegacyColor(
+        _normalizeHex(
+            (json['headerColor'] ?? '').toString(), defaultHeaderColor),
+        legacy: _legacyHeaderColor,
+        replacement: defaultHeaderColor,
+      ),
+      rowColor: _migrateLegacyColor(
+        _normalizeHex((json['rowColor'] ?? '').toString(), defaultRowColor),
+        legacy: _legacyRowColor,
+        replacement: defaultRowColor,
+      ),
+      alternateRowColor: _migrateLegacyColor(
+        _normalizeHex((json['alternateRowColor'] ?? '').toString(),
+            defaultAlternateRowColor),
+        legacy: _legacyAlternateRowColor,
+        replacement: defaultAlternateRowColor,
+      ),
     );
+  }
+
+  /// 把旧版默认色映射到新配色；其余值（含用户自定义色）原样返回。
+  static String _migrateLegacyColor(
+    String hex, {
+    required String legacy,
+    required String replacement,
+  }) {
+    return hex.toUpperCase() == legacy ? replacement : hex;
   }
 
   Map<String, dynamic> toJson() => {
@@ -272,14 +318,13 @@ class MemoryTableBehavior {
   }
 
   Map<String, dynamic> toJson() => {
+        // ⛔ 这里**只输出仍然生效的字段**。
+        // `triggerSend` / `triggerSendDeep` / `useCustomStyle` / `alternateTable` /
+        // `insertTable` / `skipTop` 全部无 UI、无逻辑消费，但旧实现照样写进导出
+        // JSON —— 用户会以为它们可调，实际毫无作用。`fromJson` 仍然读它们，
+        // 因此旧数据的兼容性不受影响，只是导出结果变干净了。
         'required': required,
         'toChat': toChat,
-        'triggerSend': triggerSend,
-        'triggerSendDeep': triggerSendDeep,
-        'useCustomStyle': useCustomStyle,
-        'alternateTable': alternateTable,
-        'insertTable': insertTable,
-        'skipTop': skipTop,
       };
 
   MemoryTableBehavior copyWith({
@@ -372,18 +417,15 @@ class MemoryTable {
         'name': name,
         'tableName': name,
         'note': note,
-        'initNode': initNode,
-        'insertNode': insertNode,
-        'updateNode': updateNode,
-        'deleteNode': deleteNode,
+        // `initNode` / `insertNode` / `updateNode` / `deleteNode` 是旧版
+        // 自定义指令模板的残留，已无任何消费者。停止写入以免污染导出 JSON；
+        // `fromJson` 仍会读取，旧数据不会丢。
         'columns': columns.map((e) => e.toJson()).toList(),
         'rows': rows.map((e) => e.toJson()).toList(),
         'isEnabled': isEnabled,
         'enable': isEnabled,
         'Required': behavior.required,
         'tochat': behavior.toChat,
-        'triggerSend': behavior.triggerSend,
-        'triggerSendDeep': behavior.triggerSendDeep,
         'config': behavior.toJson(),
         'style': style.toJson(),
       };
@@ -572,6 +614,47 @@ String _buildColumnKey(String label, int index) {
       .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
       .replaceAll(RegExp(r'^_+|_+$'), '');
   return base.isEmpty ? 'col_$index' : base;
+}
+
+/// 判定字段是否应该用多行输入框。
+///
+/// 原实现只看「描述 / 备注」两个字样，导致「剧情摘要」「详细说明」
+/// 「事件摘要总结」「重要细节」「相互情感态度」这些内容最长的字段反而
+/// 是单行输入框。这里改成关键词命中，覆盖默认模板里的全部长文本字段。
+bool looksLikeLongText(String label) {
+  const keywords = <String>[
+    '描述',
+    '备注',
+    '摘要',
+    '说明',
+    '细节',
+    '态度',
+    '总结',
+    '内容',
+    '详情',
+    '剧情',
+    '纪要',
+    '经历',
+    '设定',
+    '外貌',
+    '性格',
+  ];
+  return keywords.any(label.contains);
+}
+
+/// 估算表格视图里的列宽。
+///
+/// 旧实现用 `label.length > 8 ? 220 : 180`，对中文是**反向**的：
+/// 「性格」2 个字符占 180px（中文实际只需约 40px，白占 140px），
+/// 而「事件名称(持续时间)」11 个字符也才 220px（实际不够）。
+/// 这里按显示宽度估算 —— 中日韩文字与全角标点按 2 个单位计。
+double estimateColumnWidth(String label) {
+  var units = 0.0;
+  for (final rune in label.runes) {
+    final isWide = (rune >= 0x1100 && rune <= 0x115F) || rune >= 0x2E80;
+    units += isWide ? 2 : 1;
+  }
+  return (units * 12 + 28).clamp(110.0, 300.0);
 }
 
 bool? _asBool(dynamic value) {
