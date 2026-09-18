@@ -779,6 +779,9 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
                     'source_order': item.sourceOrder,
                   })
               .toList(),
+          // 记忆注入概况。过去调试面板只暴露世界书，记忆出了问题是黑盒：
+          // 槽位被关掉、走了兜底、或压根没内容，用户都无从判断。
+          'memory': _buildMemoryPipelineInfo(constructedPrompt),
         },
       };
       targetMsg = targetMsg.copyWith(metadata: metadata);
@@ -3149,6 +3152,37 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       );
     }
 
+    // 兜底：记忆块只会经由预设的 `vectorsMemory` 槽位进入 prompt。预设若把该
+    // 槽位关掉（prompt_order 里 enabled=false）或根本没有这个槽位，整块记忆会
+    // **静默丢失** —— 用户侧表现为「记忆完全不起作用」，且没有任何提示。
+    // 这里在缺失时按「注入深度」补一条 system 消息：既保证记忆一定能送到模型，
+    // 也让记忆设置页的深度滑块真正生效。
+    final memoryFallback = memoryBlock.trim();
+    if (memoryFallback.isNotEmpty &&
+        !enabledIdentifiers.contains('vectorsMemory')) {
+      final memorySettings = _ref.read(memoryPluginSettingsProvider);
+      _insertPromptAssemblyMessageAtDepth(
+        assembly,
+        _PromptAssemblyMessage(
+          message: ChatMessage(
+            role: 'system',
+            content: memoryFallback,
+            timestamp: now,
+          ),
+          sourceKey: 'memory_fallback',
+          sourceLabel: 'Memory (fallback)',
+          blocks: [
+            _PromptAssemblyBlock(
+              title: 'Memory (Fallback)',
+              content: memoryFallback,
+            ),
+          ],
+        ),
+        // 0 会让记忆块落到历史之后，语义上「不再靠近最近消息」，因此下限取 1。
+        depth: memorySettings.deep < 1 ? 1 : memorySettings.deep,
+      );
+    }
+
     return _ConstructedPromptResult(assemblyMessages: assembly);
   }
 
@@ -4063,6 +4097,54 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
     return _ref
         .read(memoryProvider.notifier)
         .getFormattedMemory(settings: settings);
+  }
+
+  /// 组装记忆注入的调试信息，供聊天页调试面板展示。
+  ///
+  /// `fallbackUsed` 尤其重要：记忆块正常应经预设的 `vectorsMemory` 槽位注入，
+  /// 槽位缺失时才走 `memory_fallback` 兜底。用户能直接看到「走的是哪条路」，
+  /// 就不必再靠猜判断记忆为什么没生效。
+  Map<String, dynamic> _buildMemoryPipelineInfo(
+    _ConstructedPromptResult constructedPrompt,
+  ) {
+    final settings = _ref.read(memoryPluginSettingsProvider);
+    final tables = _ref.read(memoryProvider);
+
+    final injectedTables =
+        tables.where((t) => t.isEnabled && t.behavior.toChat).toList();
+    final rowCount =
+        injectedTables.fold<int>(0, (sum, t) => sum + t.rows.length);
+
+    final block = settings.isPluginEnabled && settings.isAiReadTable
+        ? _ref.read(memoryProvider.notifier).getFormattedMemory(settings: settings)
+        : '';
+
+    // ⚠️ 不能用 `sourceKey == 'vectorsMemory'` 判断槽位是否生效：
+    // 预设里的 prompt 一律以 `sourceKey: 'preset_prompt'` 入队（见上方
+    // addMessageEntry 调用处），槽位标识只保留在 `PresetPrompt.identifier`，
+    // 不会透出到 assembly。因此这里改为**按内容比对**：如果没有走兜底，
+    // 但 assembly 里确实存在承载记忆正文的那条消息，就说明槽位生效了。
+    final fallbackUsed = constructedPrompt.assemblyMessages
+        .any((m) => m.sourceKey == 'memory_fallback');
+    final slotUsed = !fallbackUsed &&
+        block.isNotEmpty &&
+        constructedPrompt.assemblyMessages
+            .any((m) => m.message.content.contains(block));
+
+    return {
+      'enabled': settings.isPluginEnabled,
+      'readEnabled': settings.isAiReadTable,
+      'writeEnabled': settings.isAiWriteTable,
+      'injectedTableCount': injectedTables.length,
+      'totalTableCount': tables.length,
+      'rowCount': rowCount,
+      'injectedChars': block.length,
+      'injected': block.isNotEmpty,
+      'usedSlot': slotUsed,
+      'fallbackUsed': fallbackUsed,
+      'fallbackDepth': settings.deep,
+      'tableNames': injectedTables.map((t) => t.name).toList(),
+    };
   }
 
   String _buildAuthorsNoteBlock(Character? character) {

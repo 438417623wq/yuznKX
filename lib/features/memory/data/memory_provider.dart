@@ -169,46 +169,52 @@ MemoryTemplateBundle getDefaultMemoryTemplateBundle() {
     '#A0B5FF',
   ];
 
+  // 每张表的 `note` 会原样进入 prompt 的 `Note:` 行，因此必须写成**给模型的
+  // 写入规则**（何时插入 / 何时更新 / 何时清空），而不是给用户看的介绍。
   final tableSpecs = <Map<String, dynamic>>[
     {
       'name': '角色特征表格',
-      'note': '记录角色基础特征与长期状态。',
+      'note': '每个主要角色一行。首次登场时插入；外貌或衣着变化、获得或失去临时BUFF时更新对应列；'
+          'BUFF 失效后把该列清空。不要为同一角色重复插入新行。',
       'columns': ['角色名', '性别/年龄/身高/外貌', '性格', '长期备注', '临时BUFF', '当前衣着'],
       'required': true,
     },
     {
       'name': '人物关系表格',
-      'note': '追踪角色关系变化和情感态度。',
+      'note': '每对角色一行。关系或情感发生实质变化时才更新，不要每轮都改。'
+          '「基础关系」是底层身份，「当前关系」是可流动的状态。',
       'columns': ['双方角色名', '基础关系(底层身份)', '当前关系(流动状态)', '相互情感态度'],
       'required': true,
     },
     {
       'name': '事件摘要表格',
-      'note': '记录剧情推进中的关键事件。',
+      'note': '每完成一个场景或一次关键转折插入一行，保持简短。'
+          '「第四面墙」记录读者/玩家视角的元信息（例如系统提示、存档点、作者注），没有就留空。',
       'columns': ['日期', '地点场景', '剧情摘要', '重要细节', '第四面墙'],
       'required': true,
     },
     {
       'name': '世界设定表格',
-      'note': '记录新增世界观设定、规则、组织或地点。',
+      'note': '只在出现新的世界观设定、规则、组织或地点时插入。已存在的设定改为更新。',
       'columns': ['设定名', '类型', '详细说明', '影响范围'],
       'required': false,
     },
     {
       'name': '重要物品表格',
-      'note': '记录具有剧情意义的关键物品。',
+      'note': '只记录具有剧情意义的物品。物品易主或失去效果时更新，不再重要时删除该行。',
       'columns': ['拥有者', '物品名', '描述', '效果/意义', '来源'],
       'required': false,
     },
     {
       'name': '约定表格',
-      'note': '记录角色之间的约定与待办。',
+      'note': '记录角色之间的约定与待办。完成或违约后更新「完成/待完成」与「结果」两列。',
       'columns': ['日期', '双方角色名', '任务/约定内容', '完成/待完成', '结果'],
       'required': false,
     },
     {
       'name': '大总结表格',
-      'note': '用于阶段性压缩总结，保留关键转折。',
+      'note': '用于阶段性压缩：把已经稳定、不再变化的多个事件摘要合并成一行，'
+          '并在「事件摘要表格」里删除对应旧行。不要用它记录仍在进行中的事件。',
       'columns': ['事件名称(持续时间)', '事件摘要总结', '重要细节', '第四面墙纪要'],
       'required': false,
     },
@@ -462,7 +468,13 @@ class MemoryNotifier extends StateNotifier<List<MemoryTable>> {
     final mutable = [...state];
     final target = mutable.removeAt(oldIndex);
     mutable.insert(newIndex, target);
-    _commit(mutable);
+    // 重新编号：注入文本用的是数组下标，但 `tableIndex` 会被写进导出的
+    // JSON，若不跟着更新，导出后重新导入就会出现「表里写的 index 和实际
+    // 顺序对不上」的隐性错位。
+    _commit([
+      for (var i = 0; i < mutable.length; i++)
+        mutable[i].copyWith(tableIndex: i),
+    ]);
   }
 
   void updateTableMeta({
@@ -626,11 +638,24 @@ class MemoryNotifier extends StateNotifier<List<MemoryTable>> {
           table.copyWith(
             rows: [
               for (final row in table.rows)
-                if (row.id == rowId) row.copyWith(isEnabled: enabled) else row
+                if (row.id == rowId)
+                  // 只切启用状态属于「非内容变更」，不应刷新 updatedAt，
+                  // 否则「N 分钟前更新」的展示会被自己点开关的行为污染。
+                  row.copyWith(isEnabled: enabled, touchUpdatedAt: false)
+                else
+                  row
             ],
           )
         else
           table
+    ]);
+  }
+
+  /// 清空某张表的全部记录，但保留表格本身、字段定义与样式。
+  void clearRows(String tableId) {
+    _commit([
+      for (final table in state)
+        if (table.id == tableId) table.copyWith(rows: const []) else table
     ]);
   }
 
@@ -669,6 +694,10 @@ class MemoryNotifier extends StateNotifier<List<MemoryTable>> {
     if (state.isEmpty) {
       return '';
     }
+    // 全部表格都被「参与对话注入」关掉时，不必再往 prompt 里塞规则头。
+    if (!state.any((table) => table.behavior.toChat)) {
+      return '';
+    }
 
     final buffer = StringBuffer();
     buffer.writeln('# dataTable Rules');
@@ -680,13 +709,23 @@ class MemoryNotifier extends StateNotifier<List<MemoryTable>> {
         .writeln('- Use deleteRow(tableIndex, rowIndex) to remove stale rows.');
     buffer.writeln(
         '- Wrap operations in <tableEdit><!-- commands --></tableEdit>.');
+    buffer.writeln(
+        '- A column label marked with * is required; tables marked (Required) should always be kept filled.');
     buffer.writeln();
 
+    // 注意：`tableIndex` 必须是 **state 里的原始下标** —— AI 回写时
+    // `_processInsert/_processUpdate/_processDelete` 都按 `state[tableIndex]`
+    // 取值。因此这里只能「跳过」不参与注入的表，绝不能压缩下标。
     for (var tableIndex = 0; tableIndex < state.length; tableIndex++) {
       final table = state[tableIndex];
-      buffer.writeln('[$tableIndex] ${table.name}');
+      if (!table.behavior.toChat) {
+        continue;
+      }
       buffer.writeln(
-        'Columns: ${table.columns.asMap().entries.map((entry) => '${entry.key}:${entry.value.label}').join(' | ')}',
+        '[$tableIndex] ${table.name}${table.behavior.required ? ' (Required)' : ''}',
+      );
+      buffer.writeln(
+        'Columns: ${table.columns.asMap().entries.map((entry) => '${entry.key}:${entry.value.label}${entry.value.required ? '*' : ''}').join(' | ')}',
       );
       if (table.note.trim().isNotEmpty) {
         buffer.writeln('Note: ${table.note.trim()}');

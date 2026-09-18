@@ -1714,6 +1714,9 @@ $trimmed
                 .map((item) => Map<String, dynamic>.from(item)),
           )
         : const <Map<String, dynamic>>[];
+    final memoryInfo = pipeline['memory'] is Map
+        ? Map<String, dynamic>.from(pipeline['memory'] as Map)
+        : <String, dynamic>{};
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1756,8 +1759,86 @@ $trimmed
               accentColor,
               textColor,
             ),
+            if (memoryInfo.isNotEmpty)
+              _buildDebugChip(
+                'Memory',
+                memoryInfo['injected'] == true
+                    ? '${memoryInfo['injectedTableCount'] ?? 0} 表'
+                        '${memoryInfo['fallbackUsed'] == true ? ' · 兜底' : ''}'
+                    : '未注入',
+                memoryInfo['injected'] == true
+                    ? accentColor
+                    : const Color(0xFFFF8A8A),
+                textColor,
+              ),
           ],
         ),
+        if (memoryInfo.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Text(
+            'Memory Injection',
+            style: TextStyle(
+              color: mutedColor,
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 0.3,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              _buildDebugChip(
+                '启用',
+                '${memoryInfo['enabled'] == true ? '是' : '否'}',
+                accentColor,
+                textColor,
+              ),
+              _buildDebugChip(
+                '读取',
+                '${memoryInfo['readEnabled'] == true ? '开' : '关'}',
+                accentColor,
+                textColor,
+              ),
+              _buildDebugChip(
+                '回写',
+                '${memoryInfo['writeEnabled'] == true ? '开' : '关'}',
+                accentColor,
+                textColor,
+              ),
+              _buildDebugChip(
+                '参与表',
+                '${memoryInfo['injectedTableCount'] ?? 0}/'
+                    '${memoryInfo['totalTableCount'] ?? 0}',
+                accentColor,
+                textColor,
+              ),
+              _buildDebugChip(
+                '记录',
+                '${memoryInfo['rowCount'] ?? 0}',
+                accentColor,
+                textColor,
+              ),
+              _buildDebugChip(
+                '字符',
+                '${memoryInfo['injectedChars'] ?? 0}',
+                accentColor,
+                textColor,
+              ),
+              _buildDebugChip(
+                '路径',
+                memoryInfo['fallbackUsed'] == true
+                    ? '兜底（深度 ${memoryInfo['fallbackDepth'] ?? '-'}）'
+                    : (memoryInfo['usedSlot'] == true
+                        ? 'vectorsMemory 槽位'
+                        : '未进入 prompt'),
+                accentColor,
+                textColor,
+              ),
+            ],
+          ),
+        ],
         if (activatedWorldInfo.isNotEmpty) ...[
           const SizedBox(height: 10),
           Text(
