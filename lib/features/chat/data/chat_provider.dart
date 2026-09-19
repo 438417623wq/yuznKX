@@ -11,6 +11,9 @@ import '../../regex/domain/models/regex_script.dart';
 import '../../character/data/character_provider.dart';
 import '../../character/domain/models/character.dart';
 import '../../variables/data/variable_provider.dart';
+import '../../variables/data/variable_runtime.dart';
+import '../../variables/data/variable_extract_service.dart';
+import '../../settings/domain/plugin_settings_provider.dart';
 import '../../user/data/persona_provider.dart';
 import '../domain/models/chat_message.dart';
 import '../domain/models/session.dart';
@@ -83,6 +86,25 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
 
   ChatNotifier(this._ref, this.sessionId) : super([]) {
     _loadSession();
+    // 变量管道：**进入会话就灌初值**。
+    //
+    // 不能只靠 `_processResponse` 里那一次 —— 用户刚进一个有变量定义的会话、
+    // 还没发消息时，前端面板已经挂载了（`chat_bubble` 的隐式兜底），
+    // 而会话变量还是空的 → 面板只能显示兜底 0，看起来像「变量没生效」。
+    _bootstrapSessionVariables();
+  }
+
+  /// 延迟到当前帧之后初始化变量。
+  ///
+  /// 构造函数执行期间，`_getCharacter()` 依赖的 provider 可能还没就绪
+  /// —— `ChatNotifier` 是在 provider 被 read 的那一刻构造的。
+  void _bootstrapSessionVariables() {
+    Future.microtask(() {
+      if (!mounted) {
+        return;
+      }
+      _initSessionVariables(_getCharacter());
+    });
   }
 
   Session? _getSession() {
@@ -294,6 +316,103 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       return persona.description.trim();
     } catch (_) {
       return '';
+    }
+  }
+
+  /// 当前变量更新模式（来自 `pluginSettingsProvider`）。
+  String _variableUpdateMode() {
+    try {
+      return VariableUpdateMode.normalize(
+        _ref.read(pluginSettingsProvider)['variable_update_mode']?.toString(),
+      );
+    } catch (_) {
+      return VariableUpdateMode.patch;
+    }
+  }
+
+  /// 变量管道第一步：会话变量为空时，用角色卡上的 `init` 灌初值。
+  void _initSessionVariables(Character? character) {
+    if (!VariableUpdateMode.isEnabled(_variableUpdateMode())) {
+      return;
+    }
+    try {
+      _ref.read(variableRuntimeProvider).ensureInitialized(
+            sessionId: sessionId,
+            character: character,
+          );
+    } catch (e) {
+      print('Error initializing session variables: $e');
+    }
+  }
+
+  /// 变量管道第二步：生成给模型的变量更新指令（含当前值）。
+  ///
+  /// 卡上没有变量定义时返回空串，调用方据此跳过注入。
+  String _buildVariableInstruction(Character? character) {
+    if (!VariableUpdateMode.isEnabled(_variableUpdateMode())) {
+      return '';
+    }
+    try {
+      return _ref.read(variableRuntimeProvider).buildInstruction(
+            sessionId: sessionId,
+            character: character,
+          );
+    } catch (e) {
+      print('Error building variable instruction: $e');
+      return '';
+    }
+  }
+
+  /// 变量管道第三步（兜底）：异步发一次提取请求。
+  ///
+  /// 刻意做成 fire-and-forget —— 调用方在 `_postProcessMessage` 里，
+  /// 那里必须尽快把消息落库。
+  void _scheduleVariableExtraction({
+    required String content,
+    required String sessionId,
+    required Character? character,
+  }) {
+    unawaited(
+      _runVariableExtraction(
+        content: content,
+        sessionId: sessionId,
+        character: character,
+      ),
+    );
+  }
+
+  Future<void> _runVariableExtraction({
+    required String content,
+    required String sessionId,
+    required Character? character,
+  }) async {
+    try {
+      final runtime = _ref.read(variableRuntimeProvider);
+      final definition = runtime.definitionOf(character);
+      final service = _ref.read(variableExtractServiceProvider);
+      if (!service.canExtract(definition)) {
+        return;
+      }
+
+      final ops = await service.extract(
+        chatService: _ref.read(chatServiceProvider),
+        assistantReply: content,
+        definition: definition,
+        currentValues: runtime.snapshotOf(sessionId),
+        characterName: character?.name ?? '',
+      );
+      if (ops.isEmpty) {
+        return;
+      }
+
+      // 提取是异步回来的 —— 期间用户可能已经切走会话，写进去会串到别的对话。
+      if (_ref.read(activeSessionIdProvider) != sessionId) {
+        return;
+      }
+      runtime.applyOps(sessionId, ops);
+    } catch (e) {
+      // 静默：提取失败不该弹任何东西。
+      print('Variable extraction failed: $e');
     }
   }
 
@@ -594,6 +713,10 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       } else {
         character = _getCharacter();
       }
+
+      // 变量管道第一步：会话变量为空时，用角色卡上的 `init` 灌初值。
+      // 只在为空时执行 —— 否则会覆盖用户 / AI 已经改过的值。
+      _initSessionVariables(character);
 
       int targetIndex = -1;
       late ChatMessage targetMsg;
@@ -918,6 +1041,47 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
         }
       } catch (e) {
         print('Error processing memory commands in chat: $e');
+      }
+
+      // Process Variable Commands
+      //
+      // 与记忆模块同一套做法：解析模型输出里的指令块 → 写库 → 从显示内容剥离。
+      //
+      // 在这之前，变量只在**输入侧**（`_replaceMacros` 的 20+ 个调用点全是
+      // 系统提示 / 世界书 / 作者注释 / 开场白 / stop 序列 / 用户消息）执行，
+      // 模型自己吐的 `{{setvar::...}}` 只会原样显示 —— 这正是
+      // 「前端面板数值永远不动」的根因。
+      try {
+        final variableMode = _variableUpdateMode();
+        if (VariableUpdateMode.isEnabled(variableMode)) {
+          final isSameSession = _ref.read(activeSessionIdProvider) == sessionId;
+          final character = _getCharacter();
+          final outcome = _ref.read(variableRuntimeProvider).processCommands(
+                finalContent,
+                sessionId: sessionId,
+                character: character,
+                allowWrites: isSameSession,
+                messageIndex: targetIndex,
+              );
+          finalContent = outcome.content;
+
+          // 兜底提取：本轮**没解析到指令块**且开关是「指令块 + 提取」时，
+          // 额外发一次「只看变量变化」的请求。
+          //
+          // ⛔ fire-and-forget，绝不 await —— 那是个网络请求，await 会拖住
+          // 消息落库，用户会看到气泡卡住。
+          if (!outcome.matched &&
+              isSameSession &&
+              VariableUpdateMode.usesExtract(variableMode)) {
+            _scheduleVariableExtraction(
+              content: outcome.content,
+              sessionId: sessionId,
+              character: character,
+            );
+          }
+        }
+      } catch (e) {
+        print('Error processing variable commands in chat: $e');
       }
 
       // Simple regex for <think>...</think> (dotAll)
@@ -2598,6 +2762,28 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
           order: 1 << 20,
           sourceKey: 'authors_note',
           sourceLabel: 'Author\'s Note Injection',
+        ),
+      );
+    }
+
+    // 变量更新指令：**独立深度注入**，不占用 Author's Note 槽位。
+    //
+    // 为什么不塞进 authorsNote：前端面板的挂载指令已经在那个槽位里了，
+    // 两个挤在一起会互相覆盖；而且 authorsNote 被预设开关门控
+    // （`_isPresetPromptEnabled`），预设一关就连变量指令一起消失。
+    //
+    // depth 取 1 —— 贴着最新一条消息，模型最不容易忽略。
+    final variableInstruction = _buildVariableInstruction(character);
+    if (variableInstruction.isNotEmpty) {
+      depthInjections.add(
+        RpHubContextDepthInjection(
+          title: 'Variable Update',
+          role: 'system',
+          content: variableInstruction,
+          depth: 1,
+          order: (1 << 20) + 1,
+          sourceKey: 'ykx_variables',
+          sourceLabel: 'Variable Update Instruction',
         ),
       );
     }

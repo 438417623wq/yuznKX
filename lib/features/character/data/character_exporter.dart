@@ -89,6 +89,12 @@ class CharacterExporter {
     return root;
   }
 
+  /// 把角色卡拼成 chara_card_v2 的完整 JSON（不落盘、不分享）。
+  ///
+  /// 角色工坊的「查看角色卡 JSON」用它做预览，保证预览的就是真正会导出的那份。
+  static Map<String, dynamic> buildV2Json(Character character) =>
+      _toV2Json(character);
+
   static Future<void> exportAsJson(Character character) async {
     try {
       final jsonMap = _toV2Json(character);

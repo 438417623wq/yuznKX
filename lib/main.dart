@@ -16,6 +16,9 @@ void main() async {
   await Hive.openBox('regex_scripts');
   await Hive.openBox('sessions');
   await Hive.openBox('characters'); // Add characters box
+  await Hive.openBox('character_workshop'); // 角色工坊旧版：仅用于一次性迁移
+  await Hive.openBox('card_projects'); // 角色工坊：创作项目（五阶段流水线）
+  await Hive.openBox('preset_projects'); // 预设工坊：预设项目（五阶段流水线）
   
   // Wrap with ProviderScope for Riverpod
   runApp(

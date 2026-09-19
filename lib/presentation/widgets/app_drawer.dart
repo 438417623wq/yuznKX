@@ -4,6 +4,7 @@ import '../../features/settings/presentation/screens/storage_management_screen.d
 import '../../features/character/presentation/screens/character_list_screen.dart';
 import '../../features/world_info/presentation/screens/world_info_list_screen.dart';
 import '../../features/regex/presentation/screens/regex_list_screen.dart';
+import '../../features/variables/presentation/screens/variable_management_screen.dart';
 
 class AppDrawer extends StatelessWidget {
   const AppDrawer({super.key});
@@ -67,6 +68,13 @@ class AppDrawer extends StatelessWidget {
               Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const RegexListScreen()));
+            }),
+            _buildDrawerItem(
+                context, Icons.data_object, "变量管理 (Variables)", () {
+              Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const VariableManagementScreen()));
             }),
             const Divider(color: Colors.grey),
             _buildDrawerItem(context, Icons.extension, "插件扩展", () {}),

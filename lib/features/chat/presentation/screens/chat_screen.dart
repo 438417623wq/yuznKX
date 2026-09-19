@@ -388,6 +388,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         swipeCount: msg.swipes.length,
                         metadata: msg.metadata, // Pass metadata
                         isGenerating: isLastMessage && ref.watch(isGeneratingProviderFamily(sessionId)),
+                        // 前端卡挂载点每轮都会出现在消息里，但只有最新一条助手
+                        // 消息才真正渲染面板 —— 否则 50 轮对话就是 50 个活
+                        // WebView，安卓上直接吃光内存。
+                        isLatestAssistant:
+                            isLastMessage && msg.role == 'assistant',
                         onSwipe: (newIndex) {
                           ref.read(chatSessionProvider(sessionId).notifier).swipeMessage(realIndex, newIndex);
                         },

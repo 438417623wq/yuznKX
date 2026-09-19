@@ -6,6 +6,51 @@ final pluginSettingsProvider =
   return PluginSettingsNotifier();
 });
 
+/// 变量更新模式。
+///
+/// 模型每轮在回复末尾输出变量更新块，成本约 100~300 token。三档让用户
+/// 自己权衡「面板会不会动」和「花多少钱」。
+class VariableUpdateMode {
+  const VariableUpdateMode._();
+
+  /// 关闭：不注入指令、不解析、不写入。老卡的行为。
+  static const String off = 'off';
+
+  /// 只靠模型主动输出的指令块（默认）。
+  static const String patch = 'patch';
+
+  /// 指令块 + 兜底提取：本轮没解析到指令块时，额外发一次提取请求。
+  /// 弱模型学不会格式时靠它兜住。
+  static const String patchExtract = 'patch_extract';
+
+  static const List<String> values = <String>[off, patch, patchExtract];
+
+  static String normalize(String? raw) {
+    final text = (raw ?? '').trim();
+    if (values.contains(text)) {
+      return text;
+    }
+    return patch;
+  }
+
+  /// 是否启用变量管道（注入 + 解析 + 写入）。
+  static bool isEnabled(String? mode) => normalize(mode) != off;
+
+  /// 是否启用兜底提取。
+  static bool usesExtract(String? mode) => normalize(mode) == patchExtract;
+
+  static String labelOf(String? mode) {
+    switch (normalize(mode)) {
+      case off:
+        return '关闭';
+      case patchExtract:
+        return '指令块 + 兜底提取';
+      default:
+        return '仅指令块';
+    }
+  }
+}
+
 class PluginSettingsNotifier extends StateNotifier<Map<String, dynamic>> {
   PluginSettingsNotifier()
       : super({
@@ -16,6 +61,7 @@ class PluginSettingsNotifier extends StateNotifier<Map<String, dynamic>> {
           'frontend_character_card': true,
           'frontend_card_debug_panel': false,
           'show_model_debug_info': false,
+          'variable_update_mode': VariableUpdateMode.patch,
           'model_debug_style':
               0, // 0: Terminal, 1: Glass, 2: Card, 3: Cyberpunk
         }) {
@@ -39,6 +85,9 @@ class PluginSettingsNotifier extends StateNotifier<Map<String, dynamic>> {
           prefs.getBool('plugin_frontend_card_debug_panel') ?? false,
       'show_model_debug_info':
           prefs.getBool('plugin_show_model_debug_info') ?? false,
+      'variable_update_mode': VariableUpdateMode.normalize(
+        prefs.getString('plugin_variable_update_mode'),
+      ),
       'model_debug_style': prefs.getInt('plugin_model_debug_style') ?? 0,
     };
   }

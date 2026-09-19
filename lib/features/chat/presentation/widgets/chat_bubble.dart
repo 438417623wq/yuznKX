@@ -8,13 +8,17 @@ import 'package:markdown/markdown.dart' as md;
 import 'package:flutter_highlighter/flutter_highlighter.dart';
 import 'package:flutter_highlighter/themes/atom-one-dark.dart';
 import 'package:flutter_animate/flutter_animate.dart'; // For typing animation
-import 'package:webview_flutter/webview_flutter.dart';
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' as math;
 import '../../../settings/data/theme_provider.dart';
 import '../../../settings/domain/plugin_settings_provider.dart';
+import '../../../character/data/character_provider.dart';
+import '../../../variables/data/variable_provider.dart';
+import '../../../frontend_card/data/frontend_card_host.dart';
+import '../../../frontend_card/data/frontend_card_shim.dart';
+import '../../../frontend_card/domain/frontend_card_payload.dart';
+import '../../../frontend_card/presentation/frontend_card_view.dart';
+import '../../data/session_provider.dart';
 
 class ChatBubble extends ConsumerWidget {
   final String content;
@@ -32,6 +36,12 @@ class ChatBubble extends ConsumerWidget {
   /// 是否渲染顶部头像。外观预览等紧凑场景可置 false，避免出现占位网络图。
   final bool showAvatar;
 
+  /// 是不是**最后一条助手消息**。
+  ///
+  /// 前端卡的挂载点每轮都会出现在消息里，但**只有最新一条才真正渲染面板** ——
+  /// 否则 50 轮对话就是 50 个活着的 WebView，安卓上直接吃光内存。
+  final bool isLatestAssistant;
+
   const ChatBubble({
     super.key,
     required this.content,
@@ -47,6 +57,7 @@ class ChatBubble extends ConsumerWidget {
     this.metadata,
     this.isGenerating = false,
     this.showAvatar = true,
+    this.isLatestAssistant = true,
   });
 
   @override
@@ -146,6 +157,7 @@ class ChatBubble extends ConsumerWidget {
                       themeSettings,
                       isGenerating,
                       settings['frontend_card_debug_panel'] == true,
+                      _buildMountContext(ref),
                     ),
                 ],
               ),
@@ -158,9 +170,19 @@ class ChatBubble extends ConsumerWidget {
 
   Widget _buildRichMessageContent(List<_ContentSegment> segments,
       List<md.InlineSyntax> syntaxes, ThemeSettings themeSettings,
-      bool isGenerating, bool showCardDebug) {
+      bool isGenerating, bool showCardDebug, _FrontendMountContext mount) {
+    // 挂载点可以来自消息内容（正则把模型输出的标记换成了挂载点），
+    // 也可以完全不存在 —— 那就兜底渲染在消息末尾。
+    //
+    // 为什么要兜底：模型不一定每轮都记得吐那个标记，预设也可能把
+    // Author's Note 槽位关掉。要是只认显式挂载点，「卡上有面板但聊天里
+    // 什么都没有」就会变成一个查不出原因的问题。
+    final hasExplicitMount =
+        segments.any((s) => s.type == _ContentSegmentType.frontendMount);
+
     if (segments.length == 1 &&
-        segments.first.type == _ContentSegmentType.text) {
+        segments.first.type == _ContentSegmentType.text &&
+        !mount.enabled) {
       return _buildMarkdownBlock(segments.first.value, syntaxes, themeSettings);
 /*
       return Column(
@@ -186,11 +208,24 @@ class ChatBubble extends ConsumerWidget {
 */
     }
 
+    final cardCount =
+        segments.where((s) => s.type == _ContentSegmentType.card).length;
+
+    // 一条消息里只渲染**第一个**挂载点。模型偶尔会把标记吐两遍，
+    // 那就成了两个活 WebView —— 白白吃一份内存。
+    final firstMountIndex = segments.indexWhere(
+      (segment) => segment.type == _ContentSegmentType.frontendMount,
+    );
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         for (final entry in segments.asMap().entries)
-          if (entry.value.type == _ContentSegmentType.card)
+          if (entry.value.type == _ContentSegmentType.frontendMount)
+            entry.key == firstMountIndex
+                ? _buildFrontendMount(mount, isGenerating, showCardDebug)
+                : const SizedBox.shrink()
+          else if (entry.value.type == _ContentSegmentType.card)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: FrontendCardWithDebug(
@@ -200,9 +235,10 @@ class ChatBubble extends ConsumerWidget {
                 isGenerating: isGenerating,
                 showDebugPanel: showCardDebug,
                 cardIndex: entry.key + 1,
-                totalCards: segments
-                    .where((s) => s.type == _ContentSegmentType.card)
-                    .length,
+                totalCards: cardCount,
+                variables: mount.variables,
+                onVariableSet: mount.onVariableSet,
+                onVariableDelete: mount.onVariableDelete,
               ),
             )
           else if (entry.value.value.trim().isNotEmpty)
@@ -211,7 +247,75 @@ class ChatBubble extends ConsumerWidget {
               child: _buildMarkdownBlock(
                   entry.value.value, syntaxes, themeSettings),
             ),
+        if (!hasExplicitMount && mount.enabled)
+          _buildFrontendMount(mount, isGenerating, showCardDebug),
       ],
+    );
+  }
+
+  /// 渲染前端卡挂载点。
+  ///
+  /// **只有最新一条助手消息才真正渲染面板**；历史消息上什么都不画。
+  /// 挂载点每轮都会出现在消息里（那是正则加的），但一个会话只该有一个
+  /// 活着的 WebView —— 50 轮对话就是 50 个 WebView 的话，安卓直接吃光内存。
+  Widget _buildFrontendMount(
+    _FrontendMountContext mount,
+    bool isGenerating,
+    bool showCardDebug,
+  ) {
+    if (!mount.enabled || mount.document.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: FrontendCardWithDebug(
+        html: mount.document,
+        rawHtml: mount.rawHtml,
+        isGenerating: isGenerating,
+        showDebugPanel: showCardDebug,
+        cardIndex: 1,
+        totalCards: 1,
+        variables: mount.variables,
+        onVariableSet: mount.onVariableSet,
+        onVariableDelete: mount.onVariableDelete,
+      ),
+    );
+  }
+
+  /// 组装挂载点渲染所需的全部输入（角色卡上的前端产物 + 会话变量 + 写回回调）。
+  ///
+  /// 不是最新一条助手消息、或这张卡根本没有前端产物时，返回一个空上下文，
+  /// 挂载点就渲染成零尺寸。
+  _FrontendMountContext _buildMountContext(WidgetRef ref) {
+    if (!isLatestAssistant || isUser) {
+      return const _FrontendMountContext();
+    }
+
+    final character = ref.watch(activeCharacterProvider);
+    final rawHtml = FrontendCardPayload.htmlOf(character?.rawExtensions);
+    if (rawHtml.trim().isEmpty) {
+      return const _FrontendMountContext();
+    }
+
+    final document = FrontendCardDocumentCache.of(rawHtml);
+    final sessionId = ref.watch(activeSessionIdProvider);
+    if (sessionId == null) {
+      return _FrontendMountContext(
+        enabled: true,
+        document: document,
+        rawHtml: rawHtml,
+      );
+    }
+
+    final variables = ref.watch(chatVariablesProvider(sessionId));
+    final notifier = ref.read(chatVariablesProvider(sessionId).notifier);
+    return _FrontendMountContext(
+      enabled: true,
+      document: document,
+      rawHtml: rawHtml,
+      variables: variables,
+      onVariableSet: notifier.setValue,
+      onVariableDelete: notifier.deleteValue,
     );
   }
 
@@ -335,6 +439,16 @@ class ChatBubble extends ConsumerWidget {
         htmlContent = htmlContent.replaceAll(placeholderPattern, trigger);
       }
 
+      // 模型把挂载标记裹进代码块的情形（提示词里说了别这么干，但模型不一定听）。
+      // 那只是个标记、不是一张卡 —— 直接当挂载点，否则会渲染出一张什么都看不到
+      // 的空 WebView。
+      if (htmlContent.trim().isNotEmpty &&
+          htmlContent.replaceAll(_frontendMountPattern, '').trim().isEmpty) {
+        segments.add(_ContentSegment.frontendMount());
+        cursor = match.end;
+        continue;
+      }
+
       if (_shouldRenderAsFrontendCard(language, htmlContent, config)) {
         final preparedPayload =
             _prepareFrontendCardPayload(htmlContent, language);
@@ -367,7 +481,12 @@ class ChatBubble extends ConsumerWidget {
     final payload = enableJavaScript
         ? preparedPayload
         : _stripExecutableScripts(preparedPayload);
-    return _wrapFrontendCardHtml(payload);
+    // 变量垫片只在 JS 真的会执行时注入 —— 用户明确关掉 JS 时还往里塞 script
+    // 是反直觉的。
+    return FrontendCardHost.wrap(
+      payload,
+      extraScript: enableJavaScript ? FrontendCardBridge.shim : '',
+    );
   }
 
   // A card's markup and the script that populates it are usually written as
@@ -385,6 +504,16 @@ class ChatBubble extends ConsumerWidget {
     var pendingWhitespace = '';
 
     for (final segment in segments) {
+      if (segment.type == _ContentSegmentType.frontendMount) {
+        // 挂载点的 value 是空串，若不先拦下来会被下面的空白合并分支吃掉。
+        if (pendingWhitespace.isNotEmpty) {
+          merged.add(_ContentSegment.text(pendingWhitespace));
+          pendingWhitespace = '';
+        }
+        merged.add(segment);
+        continue;
+      }
+
       if (segment.type == _ContentSegmentType.card) {
         if (merged.isNotEmpty && merged.last.type == _ContentSegmentType.card) {
           final previous = merged.removeLast();
@@ -452,10 +581,26 @@ class ChatBubble extends ConsumerWidget {
     var cursor = 0;
 
     while (cursor < raw.length) {
+      final mountMatch = _firstMatchFrom(_frontendMountPattern, raw, cursor);
       final documentMatch =
           _firstMatchFrom(_htmlDocumentStartPattern, raw, cursor);
       final fragmentMatch =
           _firstMatchFrom(_htmlFragmentStartPattern, raw, cursor);
+
+      // 挂载点最先判定：它本身长得就像个 HTML 片段，落到下面的通用分支
+      // 就会被渲染成一张空卡（多一个 WebView 且什么都看不到）。
+      if (mountMatch != null &&
+          (documentMatch == null || mountMatch.start <= documentMatch.start) &&
+          (fragmentMatch == null || mountMatch.start <= fragmentMatch.start)) {
+        if (mountMatch.start > cursor) {
+          segments.add(
+            _ContentSegment.text(raw.substring(cursor, mountMatch.start)),
+          );
+        }
+        segments.add(_ContentSegment.frontendMount());
+        cursor = mountMatch.end;
+        continue;
+      }
 
       Match? nextMatch;
       var isDocument = false;
@@ -740,545 +885,6 @@ $trimmed
       }
     }
     return merged;
-  }
-
-  String _wrapFrontendCardHtml(String rawHtml) {
-    final trimmed = rawHtml.trim();
-    final hasHtmlTag =
-        RegExp(r'<html[\s>]', caseSensitive: false).hasMatch(trimmed);
-    final hostStyle = '''
-<style>
-  html, body {
-    margin: 0 !important;
-    padding: 0 !important;
-    background: transparent !important;
-    -webkit-text-size-adjust: 100% !important;
-    overflow-x: hidden !important;
-  }
-  img, video, canvas, svg {
-    max-width: 100% !important;
-    height: auto !important;
-  }
-  table {
-    display: block !important;
-    max-width: 100% !important;
-    overflow-x: auto !important;
-  }
-  pre {
-    white-space: pre-wrap !important;
-    word-wrap: break-word !important;
-    max-width: 100% !important;
-  }
-</style>
-''';
-    final hostScript = '''
-<script>
-  (function () {
-    window.__frontendCardDebugErrors = [];
-    var committedHeight = 0;
-
-    // This page is measured in order to size the very viewport it is laid out
-    // in, which closes a loop for any content sized against that viewport --
-    // vh units, a percentage height chain, a fixed panel. The host applies the
-    // height we reported, the shorter viewport makes that content measure
-    // shorter still, and for a proportional card (height: 90vh) every pass
-    // multiplies the height by the same factor, so it walks down geometrically
-    // and only stops at the floor. That walk is the "height keeps dropping and
-    // then finally holds still" seen after a tab switch.
-    //
-    // The walk is cut at its source: a host resize never starts a measurement.
-    // This viewport is only ever resized by the host applying a height, so
-    // re-measuring right after it can only read back our own echo -- and for a
-    // proportional card that echo is shorter. Measurements start from content
-    // signals only: a DOM mutation, an image load, an interaction, or a width
-    // change (which really does reflow).
-    //
-    // A shrink that does come from a content signal still clears two guards:
-    //   - no host resize is in flight, which would mean the "shorter" page is
-    //     the height we just asked for coming back rather than content news; and
-    //   - the height is not the same fraction of the viewport as the committed
-    //     one, which is the signature of a height that tracks the viewport and
-    //     would keep walking if it were followed.
-    // Growth is always reported: it cannot ratchet, and a frame that is too
-    // small clips content while a frame that is too large only wastes space.
-    var MIN_REPORT_HEIGHT = 24;
-    // A card that animates its tab height passes through many intermediate
-    // heights. The follower polls until the height holds still and commits one
-    // settled value, so the host never chases a moving target.
-    var HEIGHT_FOLLOW_TICK_MS = 60;
-    var HEIGHT_STABLE_TICKS = 3;
-    var HEIGHT_FOLLOW_MAX_MS = 2000;
-    // Two heights count as the same fraction of the viewport within this much.
-    // Kept tight: a viewport-sized card reproduces its own ratio to floating
-    // point precision (0.90, then 0.900 exactly), so anything looser would start
-    // blocking legitimate small shrinks. The cost of the tight value is that a
-    // card whose real content happens to land within 1% of the same fraction
-    // keeps the taller frame, which only wastes a few pixels and never clips.
-    var RATIO_TOLERANCE = 0.01;
-    // How long a host resize keeps its echo protected. The resize arrives a frame
-    // or two after the height is applied, and re-flows the body just after that.
-    var HEIGHT_ECHO_MS = 250;
-    // A shrink blocked by the echo window is re-measured this many times once the
-    // window closes, so a real content change inside it is not lost.
-    var ECHO_RETRY_LIMIT = 3;
-
-    var followerTimer = null;
-    var followerDeadline = 0;
-    var followerLastHeight = -1;
-    var followerStableTicks = 0;
-    // Set by a content signal, consumed by the next committed shrink.
-    var shrinkAllowed = false;
-    // Fraction of the viewport the committed height occupied. A card sized
-    // against the viewport keeps this fraction constant on every pass, which is
-    // how it is told apart from a card whose content really got shorter.
-    var committedRatio = -1;
-    var lastViewportW = 0;
-    var lastViewportH = 0;
-    var echoActiveUntil = 0;
-    var echoClearTimer = null;
-    var echoRetryPending = false;
-    var echoRetryCount = 0;
-    var suppressedCount = 0;
-
-    function viewportHeight() {
-      return window.innerHeight || 0;
-    }
-
-    // Height as a fraction of the viewport, or -1 when it is not viewport-tied.
-    function viewportRatio(height) {
-      var vp = viewportHeight();
-      if (height <= 0 || vp <= 0) return -1;
-      return height / vp;
-    }
-
-    function pushLog(message) {
-      try {
-        if (!message) return;
-        var text = String(message);
-        window.__frontendCardDebugErrors.push(text);
-        if (window.FlutterCardLog && window.FlutterCardLog.postMessage) {
-          window.FlutterCardLog.postMessage(text);
-        }
-      } catch (_) {}
-    }
-
-    function getElementBottom(element, rootTop) {
-      if (!element) return 0;
-      var rect = element.getBoundingClientRect();
-      return Math.max(0, (rect.bottom || 0) - rootTop);
-    }
-
-    function measureHeight() {
-      var body = document.body;
-      var html = document.documentElement;
-      if (!body || !html) return 0;
-
-      var bodyRect = body.getBoundingClientRect();
-      var maxBottom = 0;
-      var children = body.children || [];
-      for (var i = 0; i < children.length; i++) {
-        var child = children[i];
-        if (!child || child.tagName === 'SCRIPT' || child.tagName === 'STYLE' || child.tagName === 'LINK') {
-          continue;
-        }
-        var style = window.getComputedStyle(child);
-        if (style && (style.position === 'fixed' || style.position === 'sticky')) {
-          continue;
-        }
-        var offsetBottom = (child.offsetTop || 0) + (child.offsetHeight || 0);
-        maxBottom = Math.max(
-          maxBottom,
-          getElementBottom(child, bodyRect.top || 0),
-          offsetBottom
-        );
-      }
-
-      var bodyStyle = window.getComputedStyle(body);
-      var marginBottom = parseFloat(bodyStyle.marginBottom || '0') || 0;
-      return Math.ceil(Math.max(
-        body.scrollHeight || 0,
-        body.offsetHeight || 0,
-        maxBottom + marginBottom
-      ));
-    }
-
-    // A card that animates its tab height moves through many intermediate
-    // heights. Sampling that motion every frame and reporting each value makes
-    // the host chase a moving target, so instead the follower polls until the
-    // height holds still and then commits exactly one value.
-    function measureOnce() {
-      return Math.max(measureHeight(), MIN_REPORT_HEIGHT);
-    }
-
-    // Decides whether a measurement may be reported.
-    //
-    // Growing is always reported: a frame that is too small clips content, a
-    // frame that is too large only wastes space, and growth cannot run away.
-    // Shrinking is what closes the feedback loop, so it must clear both guards
-    // documented at the top of this script.
-    function commitHeight() {
-      var height = measureOnce();
-
-      if (committedHeight > 0 && Math.abs(height - committedHeight) <= 1) {
-        return;
-      }
-
-      if (height < committedHeight) {
-        var blockedBy = '';
-        if (!shrinkAllowed) {
-          blockedBy = 'no content change';
-        } else if (Date.now() < echoActiveUntil) {
-          // The host applied a height we asked for; the shorter page measured
-          // now is that resize coming back, not the card getting shorter.
-          // Re-check once the echo window closes, in case a real content change
-          // landed inside it.
-          blockedBy = 'viewport echo';
-          if (echoRetryCount < ECHO_RETRY_LIMIT) {
-            echoRetryCount++;
-            scheduleEchoClear();
-          }
-        } else {
-          // A proportional card measures the same fraction of the viewport on
-          // every pass, so following it down would never converge.
-          var after = viewportRatio(height);
-          if (committedRatio > 0 && after > 0 &&
-              Math.abs(committedRatio - after) <= RATIO_TOLERANCE) {
-            blockedBy = 'viewport-bound';
-          }
-        }
-
-        if (blockedBy !== '') {
-          suppressedCount++;
-          if (suppressedCount <= 5) {
-            pushLog('[height] held ' + committedHeight + ' against ' + height +
-                ' (' + blockedBy + ')');
-          }
-          return;
-        }
-      }
-
-      committedHeight = height;
-      committedRatio = viewportRatio(height);
-      shrinkAllowed = false;
-      if (window.FlutterCardHeight && window.FlutterCardHeight.postMessage) {
-        window.FlutterCardHeight.postMessage(String(height));
-      }
-    }
-
-    function stopFollower() {
-      if (followerTimer) {
-        clearTimeout(followerTimer);
-        followerTimer = null;
-      }
-      followerStableTicks = 0;
-      followerLastHeight = -1;
-      followerDeadline = 0;
-    }
-
-    // Polls until the measured height stops moving (or the deadline passes) and
-    // then commits the settled value once.
-    function followerTick() {
-      var height = measureOnce();
-      if (height === followerLastHeight) {
-        followerStableTicks++;
-      } else {
-        followerLastHeight = height;
-        followerStableTicks = 0;
-      }
-
-      if (followerStableTicks >= HEIGHT_STABLE_TICKS ||
-          Date.now() >= followerDeadline) {
-        stopFollower();
-        commitHeight();
-        return;
-      }
-
-      followerTimer = setTimeout(function () {
-        followerTimer = null;
-        followerTick();
-      }, HEIGHT_FOLLOW_TICK_MS);
-    }
-
-    function startFollower(allowShrink) {
-      if (followerTimer == null) {
-        // Fresh window: nothing may shrink the card until the caller says so.
-        followerDeadline = Date.now() + HEIGHT_FOLLOW_MAX_MS;
-        followerLastHeight = -1;
-        followerStableTicks = 0;
-        followerTimer = setTimeout(function () {
-          followerTimer = null;
-          followerTick();
-        }, HEIGHT_FOLLOW_TICK_MS);
-      }
-      if (allowShrink) {
-        // A content change outranks a plain viewport resize, and must not be
-        // downgraded by a resize that arrives while the same window is running.
-        shrinkAllowed = true;
-      }
-    }
-
-    // The card's own DOM changed (tab switch, script update, image load), so the
-    // new height may be shorter than the old one.
-    function markContentChanged() {
-      startFollower(true);
-    }
-
-    // Takes the current viewport metrics and reports how they moved since the
-    // previous call. The host applies a height by resizing this viewport, so a
-    // viewport change is our own echo; an unchanged viewport means the body
-    // resized on its own, which is the card's own content changing.
-    function noteViewport() {
-      var w = window.innerWidth || 0;
-      var h = window.innerHeight || 0;
-      var hadMetrics = lastViewportW > 0 || lastViewportH > 0;
-      var widthChanged = hadMetrics && Math.abs(w - lastViewportW) > 1;
-      var heightChanged = hadMetrics && Math.abs(h - lastViewportH) > 1;
-      lastViewportW = w;
-      lastViewportH = h;
-      // The first observation only establishes the baseline.
-      return {
-        changed: hadMetrics && (widthChanged || heightChanged),
-        widthChanged: widthChanged,
-      };
-    }
-
-    // Both the window resize event and the body ResizeObserver can observe the
-    // same host resize, so whoever sees it first opens the echo window and the
-    // other one is ignored rather than mistaken for a content change.
-    function noteHostResize(widthChanged) {
-      echoActiveUntil = Date.now() + HEIGHT_ECHO_MS;
-      if (widthChanged) {
-        // A width change really does reflow the content (rotation, split
-        // screen), so the resulting height is legitimate and may be shorter.
-        echoRetryPending = false;
-        echoRetryCount = 0;
-        startFollower(true);
-      }
-    }
-
-    function scheduleEchoClear() {
-      if (echoClearTimer) {
-        clearTimeout(echoClearTimer);
-      }
-      echoRetryPending = true;
-      echoClearTimer = setTimeout(function () {
-        echoClearTimer = null;
-        if (!echoRetryPending) {
-          return;
-        }
-        echoRetryPending = false;
-        echoRetryCount = 0;
-        startFollower(true);
-      }, Math.max(HEIGHT_ECHO_MS, echoActiveUntil - Date.now()) + 30);
-    }
-
-    // This window only ever resizes because the host applied a height, so a
-    // resize here is our own echo: the page is legitimately shorter now, but
-    // that is a consequence of the height we asked for, not new content
-    // information. Accepting it would let a viewport-sized card walk itself down
-    // to the floor. Width changes are handled by noteHostResize.
-    function handleViewportResize() {
-      var vp = noteViewport();
-      if (!vp.changed) {
-        return;
-      }
-      noteHostResize(vp.widthChanged);
-    }
-
-    // A host resize is visible twice: once as a window resize and once as the
-    // body resizing. The first one consumes it, so the second must not be read as
-    // a content change just because the metrics already look settled. A real
-    // content change always comes with a DOM mutation, which marks itself.
-    function handleBodyResize() {
-      var vp = noteViewport();
-      if (vp.changed) {
-        noteHostResize(vp.widthChanged);
-        return;
-      }
-      if (Date.now() < echoActiveUntil) {
-        return;
-      }
-      markContentChanged();
-    }
-
-    window.triggerSlash = function (text) {
-      pushLog('[triggerSlash] ' + String(text));
-      if (window.FlutterCardLog && window.FlutterCardLog.postMessage) {
-        window.FlutterCardLog.postMessage('[triggerSlash] ' + String(text));
-      }
-    };
-
-    // Minimal SillyTavern surface so cards written against the desktop
-    // extension API fail loudly in the log instead of throwing during load.
-    if (!window.SillyTavern) {
-      window.SillyTavern = {};
-    }
-    if (typeof window.SillyTavern.getContext !== 'function') {
-      window.SillyTavern.getContext = function () {
-        return {
-          name: 'SillyTavern',
-          chatId: 'flutter-host',
-          characters: [],
-          chat: [],
-          chatMetadata: {},
-          extensionSettings: {},
-          powerUserSettings: {},
-          variables: {},
-          getRequestHeaders: function () { return {}; },
-          saveSettingsDebounced: function () {},
-          saveMetadata: function () {},
-          eventSource: {},
-          eventTypes: {},
-          substituteParams: function (value) { return value; },
-          renderExtensionTemplateAsync: function () {
-            return Promise.resolve('');
-          }
-        };
-      };
-    }
-
-    if (!window.TavernHelper) {
-      window.TavernHelper = {
-        getVariables: function () { return {}; },
-        replaceVariables: function (value) { return value; },
-        setVariables: function (variables, options) {
-          pushLog('[TavernHelper.setVariables] ' + JSON.stringify(variables));
-          return Promise.resolve();
-        },
-        insertOrAssignVariables: function (variables) {
-          pushLog(
-            '[TavernHelper.insertOrAssignVariables] ' + JSON.stringify(variables)
-          );
-          return Promise.resolve();
-        },
-        triggerSlash: window.triggerSlash,
-        getLastMessageId: function () { return -1; },
-        getChatMessages: function () { return []; },
-        formatAsTavernRegexedString: function (value) { return value; }
-      };
-    }
-
-    window.addEventListener('error', function (event) {
-      pushLog('[window.error] ' + (event && event.message ? event.message : 'unknown'));
-    });
-
-    window.addEventListener('unhandledrejection', function (event) {
-      var reason = event && event.reason ? event.reason : 'unknown';
-      pushLog('[unhandledrejection] ' + String(reason));
-    });
-
-    var originalConsoleError = console.error;
-    console.error = function () {
-      try {
-        var args = Array.prototype.slice.call(arguments);
-        pushLog('[console.error] ' + args.join(' '));
-      } catch (_) {}
-      if (originalConsoleError) {
-        originalConsoleError.apply(console, arguments);
-      }
-    };
-
-    window.addEventListener('load', function () {
-      markContentChanged();
-      setTimeout(markContentChanged, 120);
-      setTimeout(markContentChanged, 400);
-      setTimeout(markContentChanged, 1000);
-    });
-    window.addEventListener('resize', handleViewportResize);
-    window.addEventListener('click', function () {
-      markContentChanged();
-      setTimeout(markContentChanged, 180);
-      setTimeout(markContentChanged, 420);
-    });
-
-    document.addEventListener('DOMContentLoaded', function () {
-      var images = document.querySelectorAll('img');
-      for (var i = 0; i < images.length; i++) {
-        images[i].addEventListener('load', markContentChanged);
-        images[i].addEventListener('error', markContentChanged);
-      }
-      markContentChanged();
-    });
-
-    if (window.MutationObserver) {
-      window.addEventListener('DOMContentLoaded', function () {
-        var body = document.body;
-        if (!body) return;
-        var mutationObserver = new MutationObserver(function () {
-          markContentChanged();
-        });
-        mutationObserver.observe(body, {
-          childList: true,
-          subtree: true,
-          attributes: true,
-          characterData: true
-        });
-      });
-    }
-
-    // The body resizes for two different reasons, and they must not be confused:
-    // the card's own content changed (only the body moved), or the host applied a
-    // height (the viewport moved too). The viewport metrics are the only
-    // reliable witness; timestamps are not, because a tab switch can be followed
-    // by the host's resize within a frame or two.
-    if (window.ResizeObserver) {
-      var observer = new ResizeObserver(handleBodyResize);
-      window.addEventListener('DOMContentLoaded', function () {
-        if (document.body) observer.observe(document.body);
-      });
-    } else {
-      setInterval(markContentChanged, 1000);
-    }
-
-    window.__frontendCardForceResize = markContentChanged;
-  })();
-</script>
-''';
-
-    if (hasHtmlTag) {
-      if (RegExp(r'<head[\s>]', caseSensitive: false).hasMatch(trimmed)) {
-        return _injectAfterFirstMatch(
-          trimmed,
-          RegExp(r'<head(\s[^>]*)?>', caseSensitive: false),
-          '$hostStyle$hostScript',
-        );
-      }
-
-      return _injectAfterFirstMatch(
-        trimmed,
-        RegExp(r'<html(\s[^>]*)?>', caseSensitive: false),
-        '<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">$hostStyle$hostScript</head>',
-      );
-    }
-
-    return '''
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  $hostStyle
-  $hostScript
-</head>
-<body>
-$trimmed
-</body>
-</html>
-''';
-  }
-
-  String _injectAfterFirstMatch(
-    String source,
-    RegExp pattern,
-    String injection,
-  ) {
-    final match = pattern.firstMatch(source);
-    if (match == null) {
-      return source;
-    }
-
-    final matchedText = match.group(0) ?? '';
-    return source.replaceFirst(matchedText, '$matchedText$injection');
   }
 
   Widget _buildTypingIndicator(ThemeSettings theme) {
@@ -2225,7 +1831,7 @@ $trimmed
   }
 }
 
-enum _ContentSegmentType { text, card }
+enum _ContentSegmentType { text, card, frontendMount }
 
 enum _FrontendJavaScriptMode { disabled, auto, script, codeBlock }
 
@@ -2283,6 +1889,43 @@ class _ContentSegment {
         enableJavaScript: enableJavaScript,
         rawSource: rawSource,
       );
+
+  /// 前端卡挂载点。本身不带内容 —— 要渲染什么，由 [_FrontendMountContext] 决定。
+  factory _ContentSegment.frontendMount() =>
+      const _ContentSegment._(_ContentSegmentType.frontendMount, '');
+}
+
+/// 渲染前端卡挂载点所需的全部输入。
+///
+/// 默认构造是「空上下文」：不是最新一条助手消息、或这张卡压根没有前端产物时
+/// 用它，挂载点就渲染成零尺寸。这样调用点不需要到处写 `if`。
+class _FrontendMountContext {
+  /// 是否可以渲染。false 时挂载点不占任何空间。
+  final bool enabled;
+
+  /// 已经过 [FrontendCardHost.wrap] 包装的完整文档（含变量垫片）。
+  final String document;
+
+  /// 未包装的原始 HTML，供调试面板展示。
+  final String rawHtml;
+
+  /// 当前会话变量快照（平铺键 = MVU 路径）。
+  final Map<String, dynamic> variables;
+
+  /// 页面通过 `YKX.setVariable` / `YKX.addVariable` 写回时调用。
+  final void Function(String path, dynamic value)? onVariableSet;
+
+  /// 页面通过 `YKX.deleteVariable` 时调用。
+  final void Function(String path)? onVariableDelete;
+
+  const _FrontendMountContext({
+    this.enabled = false,
+    this.document = '',
+    this.rawHtml = '',
+    this.variables = const <String, dynamic>{},
+    this.onVariableSet,
+    this.onVariableDelete,
+  });
 }
 
 class FrontendCardMessageDebugHeader extends StatelessWidget {
@@ -2327,6 +1970,11 @@ class FrontendCardWithDebug extends StatefulWidget {
   final bool enableJavaScript;
   final bool isGenerating;
 
+  /// 会话变量快照，透传给 [FrontendCardView] 的变量桥。
+  final Map<String, dynamic> variables;
+  final void Function(String path, dynamic value)? onVariableSet;
+  final void Function(String path)? onVariableDelete;
+
   const FrontendCardWithDebug({
     super.key,
     required this.html,
@@ -2336,6 +1984,9 @@ class FrontendCardWithDebug extends StatefulWidget {
     required this.totalCards,
     this.enableJavaScript = true,
     this.isGenerating = false,
+    this.variables = const <String, dynamic>{},
+    this.onVariableSet,
+    this.onVariableDelete,
   });
 
   @override
@@ -2370,10 +2021,13 @@ class _FrontendCardWithDebugState extends State<FrontendCardWithDebug> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        FrontendCardWebView(
+        FrontendCardView(
           html: widget.html,
           enableJavaScript: widget.enableJavaScript,
           isGenerating: widget.isGenerating,
+          variables: widget.variables,
+          onVariableSet: widget.onVariableSet,
+          onVariableDelete: widget.onVariableDelete,
           onHeightChanged: _recordHeight,
           onDebugLogs: (logs) {
             if (!mounted) {
@@ -2506,244 +2160,57 @@ class _FrontendCardWithDebugState extends State<FrontendCardWithDebug> {
   }
 }
 
-class FrontendCardWebView extends StatefulWidget {
-  final String html;
-  final bool enableJavaScript;
-  final bool isGenerating;
-  final ValueChanged<List<String>>? onDebugLogs;
-  final ValueChanged<double>? onHeightChanged;
+/// 围栏语言名 → `highlighter` 包语言表的**规范键**。
+///
+/// ⛔ 别删这张表。`highlighter` 0.1.1 的注册表（`languages/all.dart`）用的是
+/// highlight.js 的规范名，**不含常见缩写**——`'html'` 和 `'js'` 都不在里面。
+/// 而 `_getLanguage(lang) ?? plaintext`（`src/highlight.dart:271`）查不到时
+/// **不报错、直接降级成纯文本**，所以 ```html / ```js 会静默失去高亮。
+/// 这里只映射到已确认存在的键；映射目标不存在时仍退回 plaintext，不会更糟。
+const Map<String, String> _languageAliases = {
+  // HTML 家族：注册表里没有 'html'，走 highlight.js 的 xml 定义
+  'html': 'xml',
+  'htm': 'xml',
+  'xhtml': 'xml',
+  'svg': 'xml',
+  'rss': 'xml',
+  'atom': 'xml',
+  // JS 家族：注册表只有 'javascript'，没有 'js'
+  'js': 'javascript',
+  'jsx': 'javascript',
+  'mjs': 'javascript',
+  'cjs': 'javascript',
+  'node': 'javascript',
+  'ts': 'typescript',
+  'tsx': 'typescript',
+  // 其它高频缩写
+  'py': 'python',
+  'python3': 'python',
+  'sh': 'bash',
+  'zsh': 'bash',
+  'console': 'bash',
+  'yml': 'yaml',
+  'md': 'markdown',
+  'rs': 'rust',
+  'kt': 'kotlin',
+  'kts': 'kotlin',
+  'rb': 'ruby',
+  'golang': 'go',
+  'cc': 'cpp',
+  'cxx': 'cpp',
+  'hpp': 'cpp',
+  'jsonc': 'json',
+  'json5': 'json',
+  'text': 'plaintext',
+  'txt': 'plaintext',
+};
 
-  const FrontendCardWebView({
-    super.key,
-    required this.html,
-    this.enableJavaScript = true,
-    this.isGenerating = false,
-    this.onDebugLogs,
-    this.onHeightChanged,
-  });
-
-  @override
-  State<FrontendCardWebView> createState() => _FrontendCardWebViewState();
-}
-
-class _FrontendCardWebViewState extends State<FrontendCardWebView> {
-  static const String _baseUrl = 'about:blank';
-
-  late final WebViewController _controller;
-  double _height = 260;
-  bool _ready = false;
-  String? _loadedHtml;
-  final List<String> _logs = [];
-  Timer? _reloadDebounce;
-  final Set<Factory<OneSequenceGestureRecognizer>> _gestureRecognizers = {
-    Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
-  };
-
-  void _pushLog(String line) {
-    final text = line.trim();
-    if (text.isEmpty) {
-      return;
-    }
-    if (_logs.contains(text)) {
-      return;
-    }
-    _logs.add(text);
-    widget.onDebugLogs?.call(List<String>.unmodifiable(_logs));
+String _normalizeLanguage(String raw) {
+  final key = raw.trim().toLowerCase();
+  if (key.isEmpty) {
+    return 'plaintext';
   }
-
-  void _setHeight(double next) {
-    final clamped = next.clamp(_minCardHeight, 2400).toDouble();
-    if ((clamped - _height).abs() <= 1) {
-      return;
-    }
-    if (mounted) {
-      setState(() {
-        _height = clamped;
-      });
-    }
-    widget.onHeightChanged?.call(clamped);
-  }
-
-  void _load() {
-    _loadedHtml = widget.html;
-    _controller.loadHtmlString(widget.html, baseUrl: _baseUrl);
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0x00000000))
-      ..addJavaScriptChannel(
-        'FlutterCardHeight',
-        onMessageReceived: (message) {
-          final parsed = double.tryParse(message.message.trim());
-          if (parsed == null || parsed <= 0 || !mounted) {
-            return;
-          }
-          _setHeight(parsed);
-        },
-      )
-      ..addJavaScriptChannel(
-        'FlutterCardLog',
-        onMessageReceived: (message) {
-          _pushLog(message.message);
-        },
-      )
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onNavigationRequest: (request) {
-            final url = request.url.trim();
-            if (url.startsWith('about:blank') ||
-                url.startsWith('data:') ||
-                url.startsWith('http://') ||
-                url.startsWith('https://')) {
-              return NavigationDecision.navigate;
-            }
-            _pushLog('[blocked_navigation] $url');
-            return NavigationDecision.prevent;
-          },
-          onWebResourceError: (error) {
-            _pushLog('[web_resource_error] ${error.description}');
-          },
-          onPageFinished: (_) async {
-            setState(() {
-              _ready = true;
-            });
-            await _syncHeight();
-            await _syncDebugErrors();
-          },
-        ),
-      );
-    _load();
-  }
-
-  @override
-  void didUpdateWidget(covariant FrontendCardWebView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-
-    final htmlChanged = oldWidget.html != widget.html;
-    final generationEnded = oldWidget.isGenerating && !widget.isGenerating;
-    if (!htmlChanged && !generationEnded) {
-      return;
-    }
-    if (widget.html == _loadedHtml) {
-      return;
-    }
-
-    // During streaming the html changes on every token; reloading on each one
-    // means the document never finishes loading, so the card stays blank until
-    // generation stops.
-    if (widget.isGenerating) {
-      _reloadDebounce?.cancel();
-      _reloadDebounce = Timer(const Duration(milliseconds: 600), () {
-        if (mounted && !widget.isGenerating) {
-          _applyReload();
-        }
-      });
-      return;
-    }
-
-    _reloadDebounce?.cancel();
-    _reloadDebounce = null;
-    _applyReload();
-  }
-
-  void _applyReload() {
-    _logs.clear();
-    widget.onDebugLogs?.call(const []);
-    setState(() {
-      _ready = false;
-      _height = 260;
-    });
-    _load();
-  }
-
-  @override
-  void dispose() {
-    _reloadDebounce?.cancel();
-    super.dispose();
-  }
-
-  // Asks the page to measure itself. The measurement itself lives in the page's
-  // script rather than here, so every reported height goes through the same
-  // guards; measuring from Dart could apply a viewport-sized height that the
-  // page would otherwise have refused, restarting the shrink it just stopped.
-  Future<void> _syncHeight() async {
-    try {
-      await _controller.runJavaScript('''
-(() => {
-  if (typeof window.__frontendCardForceResize === 'function') {
-    window.__frontendCardForceResize();
-  }
-})();
-''');
-    } catch (e) {
-      _pushLog('[height_eval_error] $e');
-    }
-  }
-
-  Future<void> _syncDebugErrors() async {
-    try {
-      final raw = await _controller.runJavaScriptReturningResult('''
-(() => {
-  try {
-    return JSON.stringify(window.__frontendCardDebugErrors || []);
-  } catch (e) {
-    return JSON.stringify(['collect_error:' + String(e)]);
-  }
-})();
-''');
-
-      final rawText = raw.toString();
-      final text = (rawText.startsWith('"') && rawText.endsWith('"'))
-          ? (jsonDecode(rawText) as String)
-          : rawText;
-      final decoded = jsonDecode(text);
-      if (decoded is List) {
-        for (final item in decoded) {
-          _pushLog(item.toString());
-        }
-      }
-    } catch (e) {
-      _pushLog('[debug_collect_error] $e');
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final minHeight = math.max(_height, _minCardHeight).toDouble();
-    // Implicit animation here would chain with the card's own CSS transitions
-    // and read as a slow zoom on every tab switch; the height is applied as-is
-    // because the page has already settled before it is reported.
-    return Container(
-      width: double.infinity,
-      height: minHeight,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.white24),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Stack(
-        children: [
-          WebViewWidget(
-            controller: _controller,
-            gestureRecognizers: _gestureRecognizers,
-          ),
-          if (!_ready)
-            const Positioned.fill(
-              child: ColoredBox(
-                color: Color(0xAA111827),
-                child: Center(
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
+  return _languageAliases[key] ?? key;
 }
 
 class CodeElementBuilder extends MarkdownElementBuilder {
@@ -2774,10 +2241,14 @@ class CodeElementBuilder extends MarkdownElementBuilder {
         }
       }
     }
+    // 围栏里写的是缩写（```html / ```js），注册表只认规范名，先归一化。
+    // 块/行内判定仍用原始写法，避免归一化顺带改变既有渲染行为。
+    final rawLanguage = language;
+    language = _normalizeLanguage(language);
 
     // Heuristic: if text contains newline, treat as block
     // Or if language is specified.
-    final isBlock = text.contains('\n') || language != 'plaintext';
+    final isBlock = text.contains('\n') || rawLanguage != 'plaintext';
 
     if (!isBlock) {
       // Inline code
@@ -2957,7 +2428,19 @@ final RegExp _htmlFragmentStartPattern = RegExp(
   caseSensitive: false,
 );
 
-const double _minCardHeight = 200;
+/// 前端卡挂载点。
+///
+/// 匹配正则替换进来的 `<div ... data-ykx-panel="1"></div>`，也兼容裸标记
+/// `<!--YKX_PANEL-->`（模型直接吐标记、卡上正则没启用的情形）。
+///
+/// **必须优先于 [_htmlFragmentStartPattern] 判定** —— 否则挂载点会被
+/// `_looksLikeHtmlFragment` 当成一张内联卡渲染，白白多出一个 WebView，
+/// 而且那个 WebView 里是空的 div，什么都看不到。
+final RegExp _frontendMountPattern = RegExp(
+  "<div\\b[^>]*data-ykx-panel\\s*=\\s*[\"']1[\"'][^>]*>\\s*</div>"
+  "|<!--\\s*YKX_PANEL\\s*-->",
+  caseSensitive: false,
+);
 
 class _HtmlFragmentCapture {
   final String html;

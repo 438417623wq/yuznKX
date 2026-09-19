@@ -6,8 +6,11 @@ import '../../../features/user/presentation/screens/persona_list_screen.dart';
 import '../../../features/presets/presentation/screens/preset_list_screen.dart';
 import '../../../features/world_info/presentation/screens/world_info_list_screen.dart';
 import '../../../features/regex/presentation/screens/regex_list_screen.dart';
+import '../../../features/variables/presentation/screens/variable_management_screen.dart';
 import '../../../features/settings/presentation/screens/appearance_settings_screen.dart';
 import '../../../features/settings/presentation/screens/storage_management_screen.dart';
+import '../../../features/character_workshop/presentation/screens/character_workshop_screen.dart';
+import '../../../features/preset_workshop/presentation/screens/preset_workshop_screen.dart';
 import 'plugins_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
@@ -57,6 +60,14 @@ class SettingsScreen extends StatelessWidget {
               MaterialPageRoute(builder: (context) => const RegexListScreen()),
             );
           }),
+          _buildSettingsTile(context, Icons.data_object, "变量管理 (Variables)",
+              "查看 / 初始化会话变量，配置变量更新模式", () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (context) => const VariableManagementScreen()),
+            );
+          }),
           _buildSectionHeader("高级"),
           _buildSettingsTile(context, Icons.color_lens_outlined, "外观与主题",
               "背景、气泡颜色与字体大小", () {
@@ -71,6 +82,22 @@ class SettingsScreen extends StatelessWidget {
               context,
               MaterialPageRoute(
                   builder: (context) => const StorageManagementScreen()),
+            );
+          }),
+          _buildSettingsTile(
+              context, Icons.auto_fix_high, "角色工坊", "用 AI 按你的要求生成角色卡", () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (context) => const CharacterWorkshopScreen()),
+            );
+          }),
+          _buildSettingsTile(context, Icons.tune, "预设工坊",
+              "按注意力分布排布槽位，生成自己的扮演预设", () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (context) => const PresetWorkshopScreen()),
             );
           }),
           _buildSettingsTile(context, Icons.extension, "插件扩展", "管理已安装的插件", () {
